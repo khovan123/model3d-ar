@@ -35,8 +35,9 @@ export function StudioDashboard() {
   }, []);
 
   useEffect(() => {
-    setToken(sessionStorage.getItem("modelspace-admin-token") ?? "");
-    void loadModels();
+    void loadModels().finally(() => {
+      setToken(sessionStorage.getItem("modelspace-admin-token") ?? "");
+    });
   }, [loadModels]);
 
   const selectedInfo = useMemo(() => {
@@ -174,7 +175,11 @@ export function StudioDashboard() {
                 <article className="model-card" key={model.id}>
                   <div className="model-index">{String(models.indexOf(model) + 1).padStart(2, "0")}</div>
                   <div className="model-info"><h3>{model.name}</h3><p>{model.description || model.originalFileName}</p><small>{formatBytes(model.size)} · {formatDate(model.createdAt)}</small></div>
-                  <div className="qr-box"><img src={`/api/models/${model.id}/qr`} alt={`QR mở ${model.name}`} /></div>
+                  <div className="qr-box">
+                    {/* QR SVG is generated dynamically and should not be optimized by next/image. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={`/api/models/${model.id}/qr`} alt={`QR mở ${model.name}`} />
+                  </div>
                   <div className="model-actions">
                     <Link href={model.viewerPath} target="_blank" className="mini-button">Mở</Link>
                     <button type="button" className="mini-button" onClick={() => void copyUrl(model)}>Sao chép</button>
