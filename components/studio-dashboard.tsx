@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ChangeEvent, DragEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useCallback, useMemo, useRef, useState } from "react";
 import type { PublicModel } from "@/types/model";
 
 const MAX_PREVIEW_MB = 50;
@@ -15,14 +15,13 @@ function formatDate(value: string) {
   return new Intl.DateTimeFormat("vi-VN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }
 
-export function StudioDashboard() {
-  const [models, setModels] = useState<PublicModel[]>([]);
+export function StudioDashboard({ initialModels }: { initialModels: PublicModel[] }) {
+  const [models, setModels] = useState<PublicModel[]>(initialModels);
   const [file, setFile] = useState<File | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [token, setToken] = useState("");
   const [dragging, setDragging] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -31,14 +30,7 @@ export function StudioDashboard() {
     const response = await fetch("/api/models", { cache: "no-store" });
     const result = await response.json();
     setModels(result.data ?? []);
-    setLoading(false);
   }, []);
-
-  useEffect(() => {
-    void loadModels().finally(() => {
-      setToken(sessionStorage.getItem("modelspace-admin-token") ?? "");
-    });
-  }, [loadModels]);
 
   const selectedInfo = useMemo(() => {
     if (!file) return null;
@@ -79,8 +71,6 @@ export function StudioDashboard() {
 
     setSubmitting(true);
     setMessage(null);
-    sessionStorage.setItem("modelspace-admin-token", token);
-
     const data = new FormData();
     data.set("file", file);
     data.set("name", name);
@@ -167,7 +157,7 @@ export function StudioDashboard() {
 
         <section className="panel library-panel">
           <div className="section-heading"><span>02</span><div><h2>Thư viện model</h2><p>{models.length} model đã xuất bản</p></div></div>
-          {loading ? <div className="empty-state">Đang tải thư viện…</div> : models.length === 0 ? (
+          {models.length === 0 ? (
             <div className="empty-state"><strong>Chưa có model nào</strong><p>Model đầu tiên sẽ xuất hiện tại đây cùng mã QR.</p></div>
           ) : (
             <div className="model-list">
