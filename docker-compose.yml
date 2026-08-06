@@ -1,0 +1,15 @@
+services:
+  modelspace:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      APP_URL: http://localhost:3000
+      ADMIN_UPLOAD_TOKEN: change-me
+      MAX_MODEL_SIZE_MB: 50
+    volumes:
+      - modelspace_data:/app/data
+    restart: unless-stopped
+
+volumes:
+  modelspace_data:
