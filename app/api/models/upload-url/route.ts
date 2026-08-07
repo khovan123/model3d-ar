@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { isAuthorized } from "@/lib/http";
 import { createSignedUpload } from "@/lib/supabase-storage";
+import { createRouteTimer, logRoute, logRouteError } from "@/lib/request-logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -13,9 +14,13 @@ const requestSchema = z.object({
   mimeType: z.string().max(100).default("model/gltf-binary")
 });
 
-export async function POST(request: NextRequest) {
+async function handlePOST(request: NextRequest) {
+  const timer = createRouteTimer();
+
   if (!isAuthorized(request)) {
-    return NextResponse.json({ message: "Mã quản trị không hợp lệ." }, { status: 401 });
+    const response = NextResponse.json({ message: "Mã quản trị không hợp lệ." }, { status: 401 });
+    logRoute(request, response.status, timer);
+    return response;
   }
 
   try {
@@ -41,14 +46,20 @@ export async function POST(request: NextRequest) {
     const storagePath = `models/${id}.glb`;
     const uploadUrl = await createSignedUpload(storagePath);
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       data: { id, storagePath, uploadUrl, expiresIn: 7200 }
     });
+    logRoute(request, response.status, timer);
+    return response;
   } catch (error) {
     console.error("Create signed upload URL failed", error);
-    return NextResponse.json(
+    const response = NextResponse.json(
       { message: "Không thể kết nối Supabase Storage. Hãy kiểm tra cấu hình server." },
       { status: 500 }
     );
+    logRouteError(request, timer);
+    return response;
   }
 }
+
+export const POST = handlePOST;

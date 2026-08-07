@@ -2,38 +2,77 @@ import { NextRequest, NextResponse } from "next/server";
 import { isAuthorized } from "@/lib/http";
 import { deleteModel, getModel, getStoredModel } from "@/lib/models";
 import { removeStorageObject } from "@/lib/supabase-storage";
+import { createRouteTimer, logRoute, logRouteError } from "@/lib/request-logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Context = { params: Promise<{ id: string }> };
 
-export async function GET(_request: NextRequest, context: Context) {
+async function handleGET(_request: NextRequest, context: Context) {
+  const timer = createRouteTimer();
   const { id } = await context.params;
-  const model = await getModel(id);
-  if (!model) return NextResponse.json({ message: "Không tìm thấy model." }, { status: 404 });
-  return NextResponse.json({ data: model });
-}
-
-export async function DELETE(request: NextRequest, context: Context) {
-  if (!isAuthorized(request)) {
-    return NextResponse.json({ message: "Mã quản trị không hợp lệ." }, { status: 401 });
-  }
-
-  const { id } = await context.params;
-  const storedModel = await getStoredModel(id);
-  if (!storedModel) return NextResponse.json({ message: "Không tìm thấy model." }, { status: 404 });
-
-  if (storedModel.storageProvider === "supabase" && storedModel.storagePath) {
-    try {
-      await removeStorageObject(storedModel.storagePath);
-    } catch (error) {
-      console.error("Delete Supabase model failed", error);
-      return NextResponse.json({ message: "Không thể xóa file trên Supabase." }, { status: 502 });
+  try {
+    const model = await getModel(id);
+    if (!model) {
+      const response = NextResponse.json({ message: "Không tìm thấy model." }, { status: 404 });
+      logRoute(_request, response.status, timer);
+      return response;
     }
+
+    const response = NextResponse.json({ data: model });
+    logRoute(_request, response.status, timer);
+    return response;
+  } catch (error) {
+    logRouteError(_request, timer);
+    throw error;
+  }
+}
+
+async function handleDELETE(request: NextRequest, context: Context) {
+  const timer = createRouteTimer();
+
+  if (!isAuthorized(request)) {
+    const response = NextResponse.json({ message: "Mã quản trị không hợp lệ." }, { status: 401 });
+    logRoute(request, response.status, timer);
+    return response;
   }
 
-  const deleted = await deleteModel(id);
-  if (!deleted) return NextResponse.json({ message: "Không tìm thấy model." }, { status: 404 });
-  return new NextResponse(null, { status: 204 });
+  const { id } = await context.params;
+  try {
+    const storedModel = await getStoredModel(id);
+    if (!storedModel) {
+      const response = NextResponse.json({ message: "Không tìm thấy model." }, { status: 404 });
+      logRoute(request, response.status, timer);
+      return response;
+    }
+
+    if (storedModel.storageProvider === "supabase" && storedModel.storagePath) {
+      try {
+        await removeStorageObject(storedModel.storagePath);
+      } catch (error) {
+        console.error("Delete Supabase model failed", error);
+        const response = NextResponse.json({ message: "Không thể xóa file trên Supabase." }, { status: 502 });
+        logRoute(request, response.status, timer);
+        return response;
+      }
+    }
+
+    const deleted = await deleteModel(id);
+    if (!deleted) {
+      const response = NextResponse.json({ message: "Không tìm thấy model." }, { status: 404 });
+      logRoute(request, response.status, timer);
+      return response;
+    }
+
+    const response = new NextResponse(null, { status: 204 });
+    logRoute(request, response.status, timer);
+    return response;
+  } catch (error) {
+    logRouteError(request, timer);
+    throw error;
+  }
 }
+
+export const GET = handleGET;
+export const DELETE = handleDELETE;
