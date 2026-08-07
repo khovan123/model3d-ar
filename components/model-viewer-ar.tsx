@@ -36,6 +36,7 @@ const TEXTURE_SLOTS: TextureSlot[] = [
 ];
 
 const activeMixers = new Set<THREE.AnimationMixer>();
+let activeAnimationClip: THREE.AnimationClip | null = null;
 
 function clipPriority(clip: THREE.AnimationClip, index: number) {
   const name = clip.name.trim().toLowerCase();
@@ -73,6 +74,7 @@ function stopActiveMixers() {
     mixer.uncacheRoot(mixer.getRoot());
   });
   activeMixers.clear();
+  activeAnimationClip = null;
 }
 
 function installGLTFAnimationPlayback() {
@@ -99,6 +101,7 @@ function installGLTFAnimationPlayback() {
 
       const clip = chooseDefaultClip(gltf.animations);
       if (clip) {
+        activeAnimationClip = clip;
         const mixer = new THREE.AnimationMixer(gltf.scene);
         const action = mixer.clipAction(clip);
         action.reset();
@@ -304,8 +307,16 @@ function installUSDZTextureCompatibility() {
       });
     });
 
+    const exportOptions = activeAnimationClip
+      ? {
+          ...options,
+          animations: [activeAnimationClip],
+          animationFrameRate: 60
+        }
+      : options;
+
     try {
-      return await originalParseAsync.call(this, scene, options);
+      return await originalParseAsync.call(this, scene, exportOptions);
     } finally {
       replacements.forEach(({ material, slot, original }) => {
         material[slot] = original;
