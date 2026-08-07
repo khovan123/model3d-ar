@@ -5,6 +5,8 @@ import { ChangeEvent, DragEvent, FormEvent, useCallback, useMemo, useRef, useSta
 import type { PublicModel } from "@/types/model";
 
 const MAX_PREVIEW_MB = 50;
+const MAX_AUDIO_MB = 20;
+const AUDIO_EXTENSIONS = new Set(["mp3", "m4a", "wav", "ogg", "aac"]);
 
 function formatBytes(bytes: number) {
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -26,6 +28,7 @@ function formatDate(value: string) {
 export function StudioDashboard({ initialModels }: { initialModels: PublicModel[] }) {
   const [models, setModels] = useState<PublicModel[]>(initialModels);
   const [file, setFile] = useState<File | null>(null);
+  const [audioFile, setAudioFile] = useState<File | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [token, setToken] = useState("");
@@ -33,6 +36,7 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const audioInputRef = useRef<HTMLInputElement>(null);
 
   const loadModels = useCallback(async () => {
     const response = await fetch("/api/models", { cache: "no-store" });
@@ -44,6 +48,11 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
     if (!file) return null;
     return `${file.name} · ${formatBytes(file.size)}`;
   }, [file]);
+
+  const selectedAudioInfo = useMemo(() => {
+    if (!audioFile) return "Không bắt buộc · MP3, M4A, WAV, OGG, AAC · tối đa 20 MB";
+    return `${audioFile.name} · ${formatBytes(audioFile.size)}`;
+  }, [audioFile]);
 
   function selectFile(selected: File | null) {
     setMessage(null);
@@ -60,14 +69,75 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
     if (!name) setName(selected.name.replace(/\.glb$/i, "").replace(/[-_]+/g, " "));
   }
 
+  function selectAudio(selected: File | null) {
+    setMessage(null);
+    if (!selected) {
+      setAudioFile(null);
+      return;
+    }
+
+    const extension = selected.name.split(".").pop()?.toLowerCase() ?? "";
+    if (!AUDIO_EXTENSIONS.has(extension)) {
+      setMessage({ type: "error", text: "Âm thanh hỗ trợ MP3, M4A, WAV, OGG hoặc AAC." });
+      if (audioInputRef.current) audioInputRef.current.value = "";
+      return;
+    }
+    if (selected.size > MAX_AUDIO_MB * 1024 * 1024) {
+      setMessage({ type: "error", text: `Âm thanh không được vượt quá ${MAX_AUDIO_MB} MB.` });
+      if (audioInputRef.current) audioInputRef.current.value = "";
+      return;
+    }
+    setAudioFile(selected);
+  }
+
   function onFileChange(event: ChangeEvent<HTMLInputElement>) {
     selectFile(event.target.files?.[0] ?? null);
+  }
+
+  function onAudioChange(event: ChangeEvent<HTMLInputElement>) {
+    selectAudio(event.target.files?.[0] ?? null);
   }
 
   function onDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
     setDragging(false);
     selectFile(event.dataTransfer.files?.[0] ?? null);
+  }
+
+  async function uploadOptionalAudio(modelId: string, authHeaders: { "x-upload-token": string } | undefined) {
+    if (!audioFile) return true;
+
+    const signedResponse = await fetch("/api/models/audio-upload-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        id: modelId,
+        fileName: audioFile.name,
+        fileSize: audioFile.size,
+        mimeType: audioFile.type || "audio/mpeg"
+      })
+    });
+    const signedResult = await signedResponse.json().catch(() => ({}));
+    if (!signedResponse.ok) {
+      setMessage({ type: "error", text: `Model đã tạo nhưng audio chưa tải được: ${signedResult.message ?? "không thể tạo upload URL"}` });
+      return false;
+    }
+
+    const audioUpload = signedResult.data as { uploadUrl: string };
+    const uploadResponse = await fetch(audioUpload.uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": audioFile.type || "audio/mpeg",
+        "x-upsert": "false"
+      },
+      body: audioFile
+    });
+
+    if (!uploadResponse.ok) {
+      setMessage({ type: "error", text: "Model đã tạo nhưng Supabase không nhận được file âm thanh." });
+      return false;
+    }
+    return true;
   }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -130,11 +200,17 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
       return;
     }
 
-    setMessage({ type: "success", text: "Đã tải model lên và tạo QR thành công." });
+    const audioUploaded = await uploadOptionalAudio(upload.id, authHeaders);
+    if (audioUploaded) {
+      setMessage({ type: "success", text: audioFile ? "Đã tải model + âm thanh và tạo QR thành công." : "Đã tải model lên và tạo QR thành công." });
+    }
+
     setFile(null);
+    setAudioFile(null);
     setName("");
     setDescription("");
     if (inputRef.current) inputRef.current.value = "";
+    if (audioInputRef.current) audioInputRef.current.value = "";
     await loadModels();
     setSubmitting(false);
   }
@@ -187,8 +263,13 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
               <span>{selectedInfo ?? "hoặc bấm để chọn file · tối đa 50 MB"}</span>
             </div>
 
-            <label className="field"><span>Tên model</span><input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} required placeholder="Ví dụ: Villa Concept 01" /></label>
-            <label className="field"><span>Mô tả</span><textarea value={description} onChange={(e) => setDescription(e.target.value)} maxLength={500} rows={4} placeholder="Thông tin ngắn hiển thị cho người xem" /></label>
+            <label className="field"><span>Tên model</span><input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} required placeholder="Ví dụ: Blue Iris" /></label>
+            <label className="field"><span>Mô tả</span><textarea value={description} onChange={(e) => setDescription(e.target.value)} maxLength={500} rows={4} placeholder="Thông tin hiển thị khi người xem chạm vào model" /></label>
+            <label className="field">
+              <span>Âm thanh <small>(tùy chọn)</small></span>
+              <input ref={audioInputRef} type="file" accept="audio/*,.mp3,.m4a,.wav,.ogg,.aac" onChange={onAudioChange} />
+              <small>{selectedAudioInfo}</small>
+            </label>
             <label className="field"><span>Mã quản trị <small>(nếu server có cấu hình)</small></span><input type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="ADMIN_UPLOAD_TOKEN" /></label>
 
             {message && <div className={`notice notice-${message.type}`}>{message.text}</div>}
