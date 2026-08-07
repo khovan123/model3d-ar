@@ -36,15 +36,6 @@ function isAppleMobile() {
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 }
 
-function supportsQuickLook() {
-  try {
-    const anchor = document.createElement("a");
-    return typeof anchor.relList?.supports === "function" && anchor.relList.supports("ar");
-  } catch {
-    return false;
-  }
-}
-
 function distanceBetweenTouches(touches: TouchList) {
   if (touches.length < 2) return 0;
   return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
@@ -473,18 +464,40 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
     const prepareArEngine = async () => {
       if (disposed) return;
 
-      if (isAppleMobile() && supportsQuickLook()) {
+      // On iOS/iPadOS, Quick Look is the primary AR path. Do not depend on
+      // relList.supports("ar") because several in-app WKWebViews do not expose
+      // that capability check even though the system Quick Look viewer can open.
+      if (isAppleMobile()) {
         arEngineRef.current = "quicklook-preparing";
         setArEngine("quicklook-preparing");
+
+        const previousVisible = root.visible;
+        const previousPosition = root.position.clone();
+        const previousQuaternion = root.quaternion.clone();
+        const previousScale = root.scale.clone();
+
         try {
+          // USDZExporter defaults to onlyVisible=true. The AR root is hidden in
+          // the web scene until placement, so export it from a temporary visible,
+          // identity transform or Quick Look receives an empty/hidden USDZ scene.
+          root.visible = true;
+          root.position.set(0, 0, 0);
+          root.quaternion.identity();
+          root.scale.setScalar(1);
           root.updateMatrixWorld(true);
+
           const exporter = new USDZExporter();
           const arrayBuffer = await exporter.parseAsync(root, {
             maxTextureSize: 1024,
             quickLookCompatible: true,
-            includeAnchoringProperties: true
+            includeAnchoringProperties: true,
+            onlyVisible: true
           });
+
           if (disposed) return;
+          if (arrayBuffer.byteLength < 1024) throw new Error("Generated USDZ does not contain enough model data.");
+
+          if (quickLookUrlRef.current) URL.revokeObjectURL(quickLookUrlRef.current);
           const blobUrl = URL.createObjectURL(new Blob([arrayBuffer], { type: "model/vnd.usdz+zip" }));
           quickLookUrlRef.current = blobUrl;
           arEngineRef.current = "quicklook";
@@ -493,6 +506,12 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
           console.error("Create USDZ for AR Quick Look failed", exportError);
           arEngineRef.current = "unsupported";
           setArEngine("unsupported");
+        } finally {
+          root.visible = previousVisible;
+          root.position.copy(previousPosition);
+          root.quaternion.copy(previousQuaternion);
+          root.scale.copy(previousScale);
+          root.updateMatrixWorld(true);
         }
         return;
       }
