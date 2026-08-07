@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthorized } from "@/lib/http";
 import { deleteModel, getModel, getStoredModel } from "@/lib/models";
-import { removeStorageObject } from "@/lib/supabase-storage";
+import { removeStorageObject, storageObjectExists } from "@/lib/supabase-storage";
 import { createRouteTimer, logRoute, logRouteError } from "@/lib/request-logger";
 
 export const runtime = "nodejs";
@@ -55,6 +55,14 @@ async function handleDELETE(request: NextRequest, context: Context) {
         const response = NextResponse.json({ message: "Không thể xóa file trên Supabase." }, { status: 502 });
         logRoute(request, response.status, timer);
         return response;
+      }
+
+      // Audio is optional. Best-effort cleanup must not prevent deleting the model.
+      try {
+        const audioPath = `audio/${id}`;
+        if (await storageObjectExists(audioPath)) await removeStorageObject(audioPath);
+      } catch (error) {
+        console.warn("Delete optional model audio failed", error);
       }
     }
 
