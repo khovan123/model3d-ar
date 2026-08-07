@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  deleteDatabaseModel,
+  getDatabaseModel,
+  insertDatabaseModel,
+  isSupabaseDatabaseConfigured,
+  listDatabaseModels
+} from "@/lib/supabase-database";
 import type { ModelRecord, PublicModel } from "@/types/model";
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -46,19 +53,26 @@ function serialize(record: ModelRecord): PublicModel {
 }
 
 export async function listModels(): Promise<PublicModel[]> {
-  const records = await readRecords();
+  const localRecords = await readRecords();
+  const databaseRecords = isSupabaseDatabaseConfigured() ? await listDatabaseModels() : [];
+  const records = [...databaseRecords, ...localRecords.filter(
+    (local) => !databaseRecords.some((database) => database.id === local.id)
+  )];
   return records
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .map(serialize);
 }
 
 export async function getModel(id: string): Promise<PublicModel | null> {
-  const records = await readRecords();
-  const record = records.find((item) => item.id === id);
+  const record = await getStoredModel(id);
   return record ? serialize(record) : null;
 }
 
 export async function getStoredModel(id: string): Promise<ModelRecord | null> {
+  if (isSupabaseDatabaseConfigured()) {
+    const databaseModel = await getDatabaseModel(id);
+    if (databaseModel) return databaseModel;
+  }
   const records = await readRecords();
   return records.find((item) => item.id === id) ?? null;
 }
@@ -96,7 +110,46 @@ export async function createModel(input: {
   return serialize(record);
 }
 
+export async function createSupabaseModel(input: {
+  id: string;
+  name: string;
+  description: string;
+  originalFileName: string;
+  mimeType: string;
+  size: number;
+  storagePath: string;
+}) {
+  const record: ModelRecord = {
+    id: input.id,
+    name: input.name,
+    description: input.description,
+    originalFileName: input.originalFileName,
+    mimeType: input.mimeType || "model/gltf-binary",
+    size: input.size,
+    createdAt: new Date().toISOString(),
+    storagePath: input.storagePath,
+    storageProvider: "supabase"
+  };
+
+  if (isSupabaseDatabaseConfigured()) {
+    return serialize(await insertDatabaseModel(record));
+  }
+
+  await ensureStorage();
+  writeQueue = writeQueue.then(async () => {
+    const records = await readRecords();
+    records.push(record);
+    await writeRecords(records);
+  });
+  await writeQueue;
+  return serialize(record);
+}
+
 export async function deleteModel(id: string): Promise<boolean> {
+  if (isSupabaseDatabaseConfigured() && await getDatabaseModel(id)) {
+    return deleteDatabaseModel(id);
+  }
+
   let deleted: ModelRecord | undefined;
 
   writeQueue = writeQueue.then(async () => {
@@ -108,7 +161,9 @@ export async function deleteModel(id: string): Promise<boolean> {
   await writeQueue;
 
   if (!deleted) return false;
-  await unlink(path.join(UPLOAD_DIR, deleted.storedFileName)).catch(() => undefined);
+  if (deleted.storedFileName) {
+    await unlink(path.join(UPLOAD_DIR, deleted.storedFileName)).catch(() => undefined);
+  }
   return true;
 }
 

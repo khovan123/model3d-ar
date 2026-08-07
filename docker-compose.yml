@@ -4,9 +4,13 @@ services:
     ports:
       - "3000:3000"
     environment:
-      APP_URL: http://localhost:3000
-      ADMIN_UPLOAD_TOKEN: change-me
-      MAX_MODEL_SIZE_MB: 50
+      APP_URL: ${APP_URL:-http://192.168.1.14:3000}
+      ADMIN_UPLOAD_TOKEN: ${ADMIN_UPLOAD_TOKEN:-change-me}
+      MAX_MODEL_SIZE_MB: ${MAX_MODEL_SIZE_MB:-50}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      SUPABASE_STORAGE_BUCKET: ${SUPABASE_STORAGE_BUCKET:-models}
+      SUPABASE_DATABASE_ENABLED: ${SUPABASE_DATABASE_ENABLED:-true}
     volumes:
       - modelspace_data:/app/data
     restart: unless-stopped
