@@ -352,6 +352,155 @@
   border: 0;
 }
 
+.viewerHost {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+}
+
+.modelNameLabel {
+  position: fixed;
+  z-index: 7;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  display: grid;
+  gap: 1px;
+  min-width: 88px;
+  max-width: min(62vw, 260px);
+  padding: 7px 11px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 10px;
+  background: rgba(12, 12, 12, 0.72);
+  color: #fff;
+  text-align: center;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.modelNameLabel::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -5px;
+  width: 9px;
+  height: 9px;
+  background: rgba(12, 12, 12, 0.72);
+  border-right: 1px solid rgba(255, 255, 255, 0.2);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.modelNameLabel span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+}
+
+.modelNameLabel small {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.infoBackdrop {
+  position: fixed;
+  z-index: 11;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  cursor: default;
+}
+
+.modelInfoCard {
+  position: fixed;
+  z-index: 12;
+  left: 50%;
+  bottom: max(18px, calc(env(safe-area-inset-bottom) + 10px));
+  transform: translateX(-50%);
+  width: min(calc(100vw - 28px), 440px);
+  padding: 20px;
+  border-radius: 22px;
+  background: rgba(20, 20, 20, 0.92);
+  color: #fff;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(22px);
+  -webkit-backdrop-filter: blur(22px);
+}
+
+.modelInfoCard > small {
+  display: block;
+  margin-bottom: 5px;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.modelInfoCard h2 {
+  margin: 0 40px 8px 0;
+  font-size: 22px;
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+}
+
+.modelInfoCard p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.infoClose {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.audioButton {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 16px;
+  border: 0;
+  border-radius: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  background: #fff;
+  color: #111;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.audioButton span {
+  min-width: 16px;
+  font-size: 11px;
+}
+
 @media (min-width: 768px) {
   .topbar {
     top: 18px;
@@ -366,5 +515,9 @@
 
   .modeSwitch {
     min-height: 40px;
+  }
+
+  .modelInfoCard {
+    bottom: 28px;
   }
 }
