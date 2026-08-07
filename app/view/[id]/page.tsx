@@ -24,6 +24,7 @@ export default async function ViewerPage({ params }: Props) {
       modelName={model.name}
       description={model.description}
       assetUrl={model.assetPath}
+      audioUrl={`/api/models/${model.id}/audio`}
     />
   );
 }
