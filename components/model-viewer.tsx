@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
@@ -49,6 +50,7 @@ function distanceBetweenTouches(touches: TouchList) {
 }
 
 export function ModelViewer({ modelName, description, assetUrl }: Props) {
+  const router = useRouter();
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -193,7 +195,10 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
       sessionRef.current = session;
       await renderer.xr.setSession(session);
       const viewerSpace = await session.requestReferenceSpace("viewer");
-      hitTestSourceRef.current = await session.requestHitTestSource({ space: viewerSpace });
+      if (!session.requestHitTestSource) throw new Error("WebXR hit-test API is unavailable.");
+      const hitTestSource = await session.requestHitTestSource({ space: viewerSpace });
+      if (!hitTestSource) throw new Error("WebXR did not return a hit-test source.");
+      hitTestSourceRef.current = hitTestSource;
       scene.background = null;
       setArActive(true);
 
@@ -240,8 +245,8 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
       }
     }
     if (window.history.length > 1) window.history.back();
-    else window.location.assign("/");
-  }, []);
+    else router.push("/");
+  }, [router]);
 
   useEffect(() => {
     const container = mountRef.current;
