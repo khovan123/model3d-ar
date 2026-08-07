@@ -65,10 +65,11 @@ function canvasFromDataTexture(image: unknown) {
   if (!(data instanceof Uint8Array || data instanceof Uint8ClampedArray)) return null;
 
   const pixelCount = width * height;
-  let rgba: Uint8ClampedArray;
+  let rgba: Uint8ClampedArray<ArrayBuffer>;
 
   if (data.length === pixelCount * 4) {
-    rgba = new Uint8ClampedArray(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+    rgba = new Uint8ClampedArray(data.length);
+    rgba.set(data);
   } else if (data.length === pixelCount * 3) {
     rgba = new Uint8ClampedArray(pixelCount * 4);
     for (let src = 0, dst = 0; src < data.length; src += 3, dst += 4) {
