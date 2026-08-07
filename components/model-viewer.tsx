@@ -10,6 +10,7 @@ import styles from "./model-viewer.module.css";
 
 type ViewerMode = "ar" | "object";
 type ArEngine = "checking" | "webxr" | "quicklook-preparing" | "quicklook" | "unsupported";
+type ArGestureMode = "idle" | "pending" | "rotate" | "move" | "scale";
 type ThreeXRSession = NonNullable<Parameters<THREE.WebXRManager["setSession"]>[0]>;
 
 type XRSystemLike = {
@@ -66,6 +67,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
   const modelReadyRef = useRef(false);
   const placedRef = useRef(false);
   const trackingReadyRef = useRef(false);
+  const repositioningRef = useRef(false);
   const placementScaleRef = useRef(0.45);
 
   const [mode, setMode] = useState<ViewerMode>("ar");
@@ -73,6 +75,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
   const [arActive, setArActive] = useState(false);
   const [placed, setPlaced] = useState(false);
   const [trackingReady, setTrackingReady] = useState(false);
+  const [repositioning, setRepositioning] = useState(false);
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
@@ -90,6 +93,8 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
     const floor = floorRef.current;
     const reticle = reticleRef.current;
 
+    repositioningRef.current = false;
+    setRepositioning(false);
     if (scene) scene.background = new THREE.Color(0xf4f4f2);
     if (controls) controls.enabled = true;
     if (floor) floor.visible = true;
@@ -108,6 +113,8 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
     const root = modelRootRef.current;
     const floor = floorRef.current;
 
+    repositioningRef.current = false;
+    setRepositioning(false);
     if (scene) scene.background = null;
     if (controls) controls.enabled = false;
     if (floor) floor.visible = false;
@@ -117,9 +124,11 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
   const resetPlacement = useCallback(() => {
     placedRef.current = false;
     trackingReadyRef.current = false;
+    repositioningRef.current = false;
     placementScaleRef.current = 0.45;
     setPlaced(false);
     setTrackingReady(false);
+    setRepositioning(false);
 
     const root = modelRootRef.current;
     if (root) {
@@ -321,6 +330,11 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
     const tempPosition = new THREE.Vector3();
     const tempQuaternion = new THREE.Quaternion();
     const tempScale = new THREE.Vector3();
+    const latestSurfacePosition = new THREE.Vector3();
+    const cameraPosition = new THREE.Vector3();
+    const cameraForward = new THREE.Vector3();
+    const cameraRight = new THREE.Vector3();
+    const worldUp = new THREE.Vector3(0, 1, 0);
 
     const controller = renderer.xr.getController(0);
     const onSelect = () => {
@@ -337,17 +351,47 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
     controller.addEventListener("select", onSelect);
     scene.add(controller);
 
+    let gestureMode: ArGestureMode = "idle";
+    let holdTimer: number | null = null;
     let gestureStartX = 0;
+    let gestureStartY = 0;
+    let gestureLastX = 0;
+    let gestureLastY = 0;
     let gestureStartRotationY = 0;
     let gestureStartDistance = 0;
     let gestureStartScale = placementScaleRef.current;
 
+    const clearHoldTimer = () => {
+      if (holdTimer == null) return;
+      window.clearTimeout(holdTimer);
+      holdTimer = null;
+    };
+
+    const beginReposition = () => {
+      if (!sessionRef.current || !placedRef.current || gestureMode !== "pending") return;
+      gestureMode = "move";
+      repositioningRef.current = true;
+      setRepositioning(true);
+      reticle.visible = trackingReadyRef.current;
+    };
+
     const onTouchStart = (event: TouchEvent) => {
       if (!sessionRef.current || !placedRef.current) return;
+      clearHoldTimer();
+
       if (event.touches.length === 1) {
-        gestureStartX = event.touches[0].clientX;
+        const touch = event.touches[0];
+        gestureMode = "pending";
+        gestureStartX = touch.clientX;
+        gestureStartY = touch.clientY;
+        gestureLastX = touch.clientX;
+        gestureLastY = touch.clientY;
         gestureStartRotationY = root.rotation.y;
+        holdTimer = window.setTimeout(beginReposition, 260);
       } else if (event.touches.length >= 2) {
+        gestureMode = "scale";
+        repositioningRef.current = false;
+        setRepositioning(false);
         gestureStartDistance = distanceBetweenTouches(event.touches);
         gestureStartScale = root.scale.x;
       }
@@ -355,20 +399,76 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
 
     const onTouchMove = (event: TouchEvent) => {
       if (!sessionRef.current || !placedRef.current) return;
-      event.preventDefault();
-      if (event.touches.length === 1) {
-        const deltaX = event.touches[0].clientX - gestureStartX;
-        root.rotation.y = gestureStartRotationY + deltaX * 0.01;
-      } else if (event.touches.length >= 2 && gestureStartDistance > 0) {
+
+      if (event.touches.length >= 2) {
+        event.preventDefault();
+        clearHoldTimer();
+        gestureMode = "scale";
+        repositioningRef.current = false;
+        setRepositioning(false);
+        if (gestureStartDistance <= 0) {
+          gestureStartDistance = distanceBetweenTouches(event.touches);
+          gestureStartScale = root.scale.x;
+          return;
+        }
         const nextDistance = distanceBetweenTouches(event.touches);
         const nextScale = THREE.MathUtils.clamp(gestureStartScale * (nextDistance / gestureStartDistance), 0.12, 1.8);
         placementScaleRef.current = nextScale;
         root.scale.setScalar(nextScale);
+        return;
       }
+
+      if (event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const totalX = touch.clientX - gestureStartX;
+      const totalY = touch.clientY - gestureStartY;
+
+      if (gestureMode === "pending" && Math.hypot(totalX, totalY) > 9) {
+        clearHoldTimer();
+        gestureMode = "rotate";
+      }
+
+      if (gestureMode === "rotate") {
+        event.preventDefault();
+        root.rotation.y = gestureStartRotationY + totalX * 0.01;
+      } else if (gestureMode === "move") {
+        event.preventDefault();
+        const dx = touch.clientX - gestureLastX;
+        const dy = touch.clientY - gestureLastY;
+        const xrCamera = renderer.xr.getCamera(camera);
+        xrCamera.getWorldPosition(cameraPosition);
+        xrCamera.getWorldDirection(cameraForward);
+        cameraForward.y = 0;
+        if (cameraForward.lengthSq() < 0.0001) cameraForward.set(0, 0, -1);
+        else cameraForward.normalize();
+        cameraRight.crossVectors(cameraForward, worldUp).normalize();
+
+        const distanceToModel = Math.max(0.45, cameraPosition.distanceTo(root.position));
+        const worldPerPixel = THREE.MathUtils.clamp(distanceToModel * 0.0018, 0.0008, 0.005);
+        root.position.addScaledVector(cameraRight, dx * worldPerPixel);
+        root.position.addScaledVector(cameraForward, -dy * worldPerPixel);
+        if (trackingReadyRef.current) root.position.y = latestSurfacePosition.y;
+      }
+
+      gestureLastX = touch.clientX;
+      gestureLastY = touch.clientY;
+    };
+
+    const finishGesture = () => {
+      clearHoldTimer();
+      if (gestureMode === "move") {
+        repositioningRef.current = false;
+        setRepositioning(false);
+        reticle.visible = false;
+      }
+      gestureMode = "idle";
+      gestureStartDistance = 0;
     };
 
     renderer.domElement.addEventListener("touchstart", onTouchStart, { passive: true });
     renderer.domElement.addEventListener("touchmove", onTouchMove, { passive: false });
+    renderer.domElement.addEventListener("touchend", finishGesture, { passive: true });
+    renderer.domElement.addEventListener("touchcancel", finishGesture, { passive: true });
 
     const prepareArEngine = async () => {
       if (disposed) return;
@@ -470,22 +570,34 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
       controls.enabled = modeRef.current === "object" && !inArSession;
       if (controls.enabled) controls.update();
 
-      if (frame && inArSession && hitTestSourceRef.current && !placedRef.current) {
+      if (frame && inArSession && hitTestSourceRef.current) {
         const referenceSpace = renderer.xr.getReferenceSpace();
         if (referenceSpace) {
           const results = frame.getHitTestResults(hitTestSourceRef.current);
           if (results.length > 0) {
             const pose = results[0].getPose(referenceSpace);
             if (pose) {
-              reticle.visible = true;
               reticle.matrix.fromArray(pose.transform.matrix);
+              reticle.matrix.decompose(tempPosition, tempQuaternion, tempScale);
+              latestSurfacePosition.copy(tempPosition);
+
               if (!trackingReadyRef.current) {
                 trackingReadyRef.current = true;
                 setTrackingReady(true);
               }
+
+              if (!placedRef.current) {
+                reticle.visible = true;
+                root.visible = modelReadyRef.current;
+                root.position.lerp(tempPosition, 0.38);
+                root.scale.setScalar(placementScaleRef.current);
+              } else {
+                reticle.visible = repositioningRef.current;
+              }
             }
           } else {
             reticle.visible = false;
+            if (!placedRef.current) root.visible = false;
             if (trackingReadyRef.current) {
               trackingReadyRef.current = false;
               setTrackingReady(false);
@@ -511,8 +623,11 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
       disposed = true;
       resizeObserver.disconnect();
       renderer.setAnimationLoop(null);
+      clearHoldTimer();
       renderer.domElement.removeEventListener("touchstart", onTouchStart);
       renderer.domElement.removeEventListener("touchmove", onTouchMove);
+      renderer.domElement.removeEventListener("touchend", finishGesture);
+      renderer.domElement.removeEventListener("touchcancel", finishGesture);
       controller.removeEventListener("select", onSelect);
       hitTestSourceRef.current?.cancel();
       hitTestSourceRef.current = null;
@@ -600,7 +715,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
             {arEngine === "quicklook"
               ? "AR sẽ mở bằng Quick Look để đặt model lên mặt phẳng và tương tác trực tiếp bằng tay."
               : arEngine === "webxr"
-                ? "Camera sẽ tìm mặt phẳng thực tế. Di chuyển điện thoại, chạm để đặt model rồi xoay hoặc thu phóng bằng tay."
+                ? "Model sẽ bám theo điểm ngắm khi bạn di chuyển điện thoại. Chạm để đặt, sau đó có thể xoay, đổi kích thước hoặc kéo sang vị trí khác."
                 : arEngine === "quicklook-preparing"
                   ? "Đang chuyển GLB sang USDZ bằng Three.js để mở AR Quick Look trên iPhone."
                   : arEngine === "unsupported"
@@ -624,13 +739,17 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
             <span className={styles.plane} />
             <span className={styles.phone} />
           </div>
-          <strong>{trackingReady ? "Chạm để đặt mô hình" : "Di chuyển điện thoại để bắt đầu"}</strong>
-          <span>{trackingReady ? "Đã tìm thấy mặt phẳng" : "Hướng camera xuống sàn hoặc mặt bàn"}</span>
+          <strong>{trackingReady ? "Di chuyển để chọn vị trí · chạm để đặt" : "Di chuyển điện thoại để bắt đầu"}</strong>
+          <span>{trackingReady ? "Model đang bám theo mặt phẳng trước camera" : "Hướng camera xuống sàn hoặc mặt bàn"}</span>
         </div>
       )}
 
       {!loading && !error && mode === "ar" && arActive && placed && (
-        <div className={styles.gestureHint}>Di chuyển điện thoại để đổi góc nhìn · vuốt model để xoay · chụm hai ngón để đổi kích thước</div>
+        <div className={styles.gestureHint}>
+          {repositioning
+            ? "Đang di chuyển model · kéo ngón tay để đổi vị trí rồi thả để đặt lại"
+            : "Vuốt nhanh để xoay · giữ model rồi kéo để di chuyển · chụm hai ngón để đổi kích thước"}
+        </div>
       )}
 
       {!loading && !error && mode === "object" && (
