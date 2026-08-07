@@ -26,7 +26,7 @@ export async function GET(request: NextRequest, context: Context) {
     headers: {
       "Content-Type": "image/svg+xml; charset=utf-8",
       "Content-Disposition": `inline; filename="${id}.svg"`,
-      "Cache-Control": "public, max-age=300"
+      "Cache-Control": "no-store, max-age=0"
     }
   });
 }

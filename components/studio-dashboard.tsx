@@ -12,7 +12,15 @@ function formatBytes(bytes: number) {
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat("vi-VN", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+  const date = new Date(value);
+  const vietnamTime = new Date(date.getTime() + 7 * 60 * 60 * 1000);
+  const day = String(vietnamTime.getUTCDate()).padStart(2, "0");
+  const month = String(vietnamTime.getUTCMonth() + 1).padStart(2, "0");
+  const year = vietnamTime.getUTCFullYear();
+  const hours = String(vietnamTime.getUTCHours()).padStart(2, "0");
+  const minutes = String(vietnamTime.getUTCMinutes()).padStart(2, "0");
+
+  return `${hours}:${minutes} ${day}/${month}/${year}`;
 }
 
 export function StudioDashboard({ initialModels }: { initialModels: PublicModel[] }) {
@@ -71,20 +79,53 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
 
     setSubmitting(true);
     setMessage(null);
-    const data = new FormData();
-    data.set("file", file);
-    data.set("name", name);
-    data.set("description", description);
+    const authHeaders = token ? { "x-upload-token": token } : undefined;
+    const signedResponse = await fetch("/api/models/upload-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({ fileName: file.name, fileSize: file.size, mimeType: file.type })
+    });
+    const signedResult = await signedResponse.json().catch(() => ({}));
+
+    if (!signedResponse.ok) {
+      setMessage({ type: "error", text: signedResult.message ?? "Không thể tạo đường dẫn upload." });
+      setSubmitting(false);
+      return;
+    }
+
+    const upload = signedResult.data as { id: string; storagePath: string; uploadUrl: string };
+    const uploadResponse = await fetch(upload.uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": file.type || "model/gltf-binary",
+        "x-upsert": "false"
+      },
+      body: file
+    });
+
+    if (!uploadResponse.ok) {
+      setMessage({ type: "error", text: "Supabase không nhận được file model." });
+      setSubmitting(false);
+      return;
+    }
 
     const response = await fetch("/api/models", {
       method: "POST",
-      headers: token ? { "x-upload-token": token } : undefined,
-      body: data
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        id: upload.id,
+        storagePath: upload.storagePath,
+        name,
+        description,
+        originalFileName: file.name,
+        mimeType: file.type || "model/gltf-binary",
+        size: file.size
+      })
     });
     const result = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-      setMessage({ type: "error", text: result.message ?? "Không thể tải model lên." });
+      setMessage({ type: "error", text: result.message ?? "File đã upload nhưng không thể lưu thông tin model." });
       setSubmitting(false);
       return;
     }
