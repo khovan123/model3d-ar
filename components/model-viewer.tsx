@@ -1,14 +1,26 @@
 "use client";
 
-import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { USDZExporter } from "three/addons/exporters/USDZExporter.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import styles from "./model-viewer.module.css";
 
-type ViewerMode = "touch" | "motion";
-type OrientationPermissionEvent = typeof DeviceOrientationEvent & {
-  requestPermission?: () => Promise<"granted" | "denied">;
+type ViewerMode = "ar" | "object";
+type ArEngine = "checking" | "webxr" | "quicklook-preparing" | "quicklook" | "unsupported";
+type ThreeXRSession = NonNullable<Parameters<THREE.WebXRManager["setSession"]>[0]>;
+
+type XRSystemLike = {
+  isSessionSupported: (mode: "immersive-ar") => Promise<boolean>;
+  requestSession: (
+    mode: "immersive-ar",
+    options?: {
+      requiredFeatures?: string[];
+      optionalFeatures?: string[];
+      domOverlay?: { root: Element };
+    }
+  ) => Promise<ThreeXRSession>;
 };
 
 type Props = {
@@ -17,203 +29,468 @@ type Props = {
   assetUrl: string;
 };
 
-const toRad = THREE.MathUtils.degToRad;
+function isAppleMobile() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
 
-function shortestAngle(current: number, start: number) {
-  let delta = current - start;
-  while (delta > 180) delta -= 360;
-  while (delta < -180) delta += 360;
-  return delta;
+function supportsQuickLook() {
+  try {
+    const anchor = document.createElement("a");
+    return typeof anchor.relList?.supports === "function" && anchor.relList.supports("ar");
+  } catch {
+    return false;
+  }
+}
+
+function distanceBetweenTouches(touches: TouchList) {
+  if (touches.length < 2) return 0;
+  return Math.hypot(touches[0].clientX - touches[1].clientX, touches[0].clientY - touches[1].clientY);
 }
 
 export function ModelViewer({ modelName, description, assetUrl }: Props) {
   const mountRef = useRef<HTMLDivElement>(null);
-  const rootRef = useRef<THREE.Group | null>(null);
+  const sceneRef = useRef<THREE.Scene | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
-  const targetRotationRef = useRef(new THREE.Euler(0, 0, 0, "YXZ"));
-  const baselineRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
-  const [mode, setMode] = useState<ViewerMode>("touch");
+  const modelRootRef = useRef<THREE.Group | null>(null);
+  const floorRef = useRef<THREE.Mesh | null>(null);
+  const reticleRef = useRef<THREE.Mesh | null>(null);
+  const sessionRef = useRef<ThreeXRSession | null>(null);
+  const hitTestSourceRef = useRef<XRHitTestSource | null>(null);
+  const quickLookUrlRef = useRef<string | null>(null);
+  const modeRef = useRef<ViewerMode>("ar");
+  const arEngineRef = useRef<ArEngine>("checking");
+  const modelReadyRef = useRef(false);
+  const placedRef = useRef(false);
+  const trackingReadyRef = useRef(false);
+  const placementScaleRef = useRef(0.45);
+
+  const [mode, setMode] = useState<ViewerMode>("ar");
+  const [arEngine, setArEngine] = useState<ArEngine>("checking");
+  const [arActive, setArActive] = useState(false);
+  const [placed, setPlaced] = useState(false);
+  const [trackingReady, setTrackingReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
-  const [motionMessage, setMotionMessage] = useState("");
-  const modeRef = useRef<ViewerMode>(mode);
+  const [shareMessage, setShareMessage] = useState("");
 
-  useEffect(() => { modeRef.current = mode; }, [mode]);
-
-  const resetView = useCallback(() => {
-    baselineRef.current = null;
-    targetRotationRef.current.set(0, 0, 0);
-    rootRef.current?.rotation.set(0, 0, 0);
-    controlsRef.current?.reset();
+  const setViewerMode = useCallback((nextMode: ViewerMode) => {
+    modeRef.current = nextMode;
+    setMode(nextMode);
   }, []);
 
-  const enterFullscreen = useCallback(async () => {
-    if (!document.fullscreenElement) await mountRef.current?.requestFullscreen?.();
-    else await document.exitFullscreen();
+  const configureObjectMode = useCallback(() => {
+    const scene = sceneRef.current;
+    const controls = controlsRef.current;
+    const root = modelRootRef.current;
+    const floor = floorRef.current;
+    const reticle = reticleRef.current;
+
+    if (scene) scene.background = new THREE.Color(0xf4f4f2);
+    if (controls) controls.enabled = true;
+    if (floor) floor.visible = true;
+    if (reticle) reticle.visible = false;
+    if (root && modelReadyRef.current) {
+      root.visible = true;
+      root.position.set(0, 0, 0);
+      root.rotation.set(0, 0, 0);
+      root.scale.setScalar(1);
+    }
   }, []);
 
-  const enableMotion = useCallback(async () => {
-    setMotionMessage("");
-    if (!("DeviceOrientationEvent" in window)) {
-      setMotionMessage("Thiết bị không hỗ trợ cảm biến hướng. Đã giữ chế độ chạm.");
-      setMode("touch");
+  const configureArIdle = useCallback(() => {
+    const scene = sceneRef.current;
+    const controls = controlsRef.current;
+    const root = modelRootRef.current;
+    const floor = floorRef.current;
+
+    if (scene) scene.background = null;
+    if (controls) controls.enabled = false;
+    if (floor) floor.visible = false;
+    if (root) root.visible = false;
+  }, []);
+
+  const resetPlacement = useCallback(() => {
+    placedRef.current = false;
+    trackingReadyRef.current = false;
+    placementScaleRef.current = 0.45;
+    setPlaced(false);
+    setTrackingReady(false);
+
+    const root = modelRootRef.current;
+    if (root) {
+      root.visible = false;
+      root.position.set(0, 0, 0);
+      root.rotation.set(0, 0, 0);
+      root.scale.setScalar(placementScaleRef.current);
+    }
+  }, []);
+
+  const showObject = useCallback(async () => {
+    setViewerMode("object");
+    if (sessionRef.current) {
+      try {
+        await sessionRef.current.end();
+      } catch {
+        configureObjectMode();
+      }
+      return;
+    }
+    configureObjectMode();
+  }, [configureObjectMode, setViewerMode]);
+
+  const launchQuickLook = useCallback(() => {
+    const href = quickLookUrlRef.current;
+    if (!href) return;
+
+    const anchor = document.createElement("a");
+    const image = document.createElement("img");
+    anchor.rel = "ar";
+    anchor.href = href;
+    anchor.style.position = "fixed";
+    anchor.style.width = "1px";
+    anchor.style.height = "1px";
+    anchor.style.opacity = "0";
+    anchor.style.pointerEvents = "none";
+    image.src = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=";
+    image.alt = "";
+    anchor.appendChild(image);
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }, []);
+
+  const startAR = useCallback(async () => {
+    if (!modelReadyRef.current) return;
+    setViewerMode("ar");
+    configureArIdle();
+
+    if (arEngineRef.current === "quicklook") {
+      launchQuickLook();
       return;
     }
 
-    const orientationEvent = DeviceOrientationEvent as OrientationPermissionEvent;
-    if (typeof orientationEvent.requestPermission === "function") {
-      try {
-        const permission = await orientationEvent.requestPermission();
-        if (permission !== "granted") {
-          setMotionMessage("Bạn chưa cấp quyền cảm biến chuyển động.");
-          setMode("touch");
-          return;
-        }
-      } catch {
-        setMotionMessage("Không thể kích hoạt cảm biến. Hãy mở trang bằng HTTPS.");
-        setMode("touch");
+    if (arEngineRef.current !== "webxr") return;
+    const renderer = rendererRef.current;
+    const scene = sceneRef.current;
+    if (!renderer || !scene || sessionRef.current) return;
+
+    const xr = (navigator as Navigator & { xr?: XRSystemLike }).xr;
+    if (!xr) return;
+
+    try {
+      resetPlacement();
+      renderer.xr.enabled = true;
+      renderer.xr.setReferenceSpaceType("local");
+      const session = await xr.requestSession("immersive-ar", {
+        requiredFeatures: ["hit-test"],
+        optionalFeatures: ["dom-overlay"],
+        domOverlay: { root: document.body }
+      });
+
+      sessionRef.current = session;
+      await renderer.xr.setSession(session);
+      const viewerSpace = await session.requestReferenceSpace("viewer");
+      hitTestSourceRef.current = await session.requestHitTestSource({ space: viewerSpace });
+      scene.background = null;
+      setArActive(true);
+
+      const handleEnd = () => {
+        hitTestSourceRef.current?.cancel();
+        hitTestSourceRef.current = null;
+        sessionRef.current = null;
+        setArActive(false);
+        resetPlacement();
+        setViewerMode("object");
+        configureObjectMode();
+      };
+      session.addEventListener("end", handleEnd, { once: true });
+    } catch (startError) {
+      console.error("Start WebXR AR failed", startError);
+      setArActive(false);
+      setError("Không thể mở camera AR. Hãy dùng HTTPS và cấp quyền camera cho trình duyệt.");
+    }
+  }, [configureArIdle, configureObjectMode, launchQuickLook, resetPlacement, setViewerMode]);
+
+  const shareViewer = useCallback(async () => {
+    const url = window.location.href;
+    setShareMessage("");
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: modelName, text: description || `Xem model 3D ${modelName}`, url });
         return;
       }
+      await navigator.clipboard.writeText(url);
+      setShareMessage("Đã sao chép liên kết");
+      window.setTimeout(() => setShareMessage(""), 1800);
+    } catch (shareError) {
+      if (shareError instanceof DOMException && shareError.name === "AbortError") return;
+      setShareMessage("Không thể chia sẻ liên kết");
     }
+  }, [description, modelName]);
 
-    baselineRef.current = null;
-    setMode("motion");
+  const closeViewer = useCallback(async () => {
+    if (sessionRef.current) {
+      try {
+        await sessionRef.current.end();
+      } catch {
+        // Continue navigation even if the XR session is already closing.
+      }
+    }
+    if (window.history.length > 1) window.history.back();
+    else window.location.assign("/");
   }, []);
 
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
 
+    let disposed = false;
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0d0f13);
+    scene.background = null;
+    sceneRef.current = scene;
 
-    const camera = new THREE.PerspectiveCamera(38, container.clientWidth / container.clientHeight, 0.01, 1000);
-    camera.position.set(0, 0.35, 4.5);
+    const camera = new THREE.PerspectiveCamera(40, container.clientWidth / container.clientHeight, 0.01, 100);
+    camera.position.set(1.45, 0.9, 2.6);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
+    rendererRef.current = renderer;
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.15;
+    renderer.toneMappingExposure = 1.08;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    container.prepend(renderer.domElement);
+    container.appendChild(renderer.domElement);
 
-    const ambient = new THREE.HemisphereLight(0xdce9ff, 0x211b18, 2.2);
-    scene.add(ambient);
-    const key = new THREE.DirectionalLight(0xffffff, 4.2);
-    key.position.set(4, 6, 5);
+    const hemisphere = new THREE.HemisphereLight(0xffffff, 0x737373, 2.7);
+    scene.add(hemisphere);
+    const key = new THREE.DirectionalLight(0xffffff, 4.1);
+    key.position.set(4, 7, 4);
     key.castShadow = true;
+    key.shadow.mapSize.set(1024, 1024);
     scene.add(key);
-    const rim = new THREE.DirectionalLight(0x8fb5ff, 2.4);
-    rim.position.set(-5, 2, -4);
-    scene.add(rim);
+    const fill = new THREE.DirectionalLight(0xd7e4ff, 1.4);
+    fill.position.set(-4, 3, -3);
+    scene.add(fill);
 
     const floor = new THREE.Mesh(
-      new THREE.CircleGeometry(3.2, 96),
-      new THREE.MeshStandardMaterial({ color: 0x171a20, roughness: 0.9, metalness: 0.05 })
+      new THREE.CircleGeometry(2.2, 96),
+      new THREE.MeshStandardMaterial({ color: 0xe9e9e6, roughness: 1, metalness: 0 })
     );
     floor.rotation.x = -Math.PI / 2;
-    floor.position.y = -1.25;
+    floor.position.y = -0.012;
     floor.receiveShadow = true;
+    floor.visible = false;
+    floorRef.current = floor;
     scene.add(floor);
 
     const root = new THREE.Group();
-    rootRef.current = root;
+    root.visible = false;
+    modelRootRef.current = root;
     scene.add(root);
+
+    const reticle = new THREE.Mesh(
+      new THREE.RingGeometry(0.075, 0.095, 40).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
+    );
+    reticle.matrixAutoUpdate = false;
+    reticle.visible = false;
+    reticleRef.current = reticle;
+    scene.add(reticle);
 
     const controls = new OrbitControls(camera, renderer.domElement);
     controlsRef.current = controls;
     controls.enableDamping = true;
     controls.dampingFactor = 0.075;
     controls.enablePan = false;
-    controls.minDistance = 1.2;
-    controls.maxDistance = 10;
-    controls.target.set(0, 0, 0);
+    controls.minDistance = 1.15;
+    controls.maxDistance = 7;
+    controls.target.set(0, 0.32, 0);
+    controls.enabled = false;
     controls.saveState();
+
+    const tempPosition = new THREE.Vector3();
+    const tempQuaternion = new THREE.Quaternion();
+    const tempScale = new THREE.Vector3();
+
+    const controller = renderer.xr.getController(0);
+    const onSelect = () => {
+      if (modeRef.current !== "ar" || placedRef.current || !reticle.visible) return;
+      reticle.matrix.decompose(tempPosition, tempQuaternion, tempScale);
+      root.position.copy(tempPosition);
+      root.rotation.set(0, 0, 0);
+      root.scale.setScalar(placementScaleRef.current);
+      root.visible = true;
+      reticle.visible = false;
+      placedRef.current = true;
+      setPlaced(true);
+    };
+    controller.addEventListener("select", onSelect);
+    scene.add(controller);
+
+    let gestureStartX = 0;
+    let gestureStartRotationY = 0;
+    let gestureStartDistance = 0;
+    let gestureStartScale = placementScaleRef.current;
+
+    const onTouchStart = (event: TouchEvent) => {
+      if (!sessionRef.current || !placedRef.current) return;
+      if (event.touches.length === 1) {
+        gestureStartX = event.touches[0].clientX;
+        gestureStartRotationY = root.rotation.y;
+      } else if (event.touches.length >= 2) {
+        gestureStartDistance = distanceBetweenTouches(event.touches);
+        gestureStartScale = root.scale.x;
+      }
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (!sessionRef.current || !placedRef.current) return;
+      event.preventDefault();
+      if (event.touches.length === 1) {
+        const deltaX = event.touches[0].clientX - gestureStartX;
+        root.rotation.y = gestureStartRotationY + deltaX * 0.01;
+      } else if (event.touches.length >= 2 && gestureStartDistance > 0) {
+        const nextDistance = distanceBetweenTouches(event.touches);
+        const nextScale = THREE.MathUtils.clamp(gestureStartScale * (nextDistance / gestureStartDistance), 0.12, 1.8);
+        placementScaleRef.current = nextScale;
+        root.scale.setScalar(nextScale);
+      }
+    };
+
+    renderer.domElement.addEventListener("touchstart", onTouchStart, { passive: true });
+    renderer.domElement.addEventListener("touchmove", onTouchMove, { passive: false });
+
+    const prepareArEngine = async () => {
+      if (disposed) return;
+
+      if (isAppleMobile() && supportsQuickLook()) {
+        arEngineRef.current = "quicklook-preparing";
+        setArEngine("quicklook-preparing");
+        try {
+          root.updateMatrixWorld(true);
+          const exporter = new USDZExporter();
+          const arrayBuffer = await exporter.parseAsync(root, {
+            maxTextureSize: 1024,
+            quickLookCompatible: true,
+            includeAnchoringProperties: true
+          });
+          if (disposed) return;
+          const blobUrl = URL.createObjectURL(new Blob([arrayBuffer], { type: "model/vnd.usdz+zip" }));
+          quickLookUrlRef.current = blobUrl;
+          arEngineRef.current = "quicklook";
+          setArEngine("quicklook");
+        } catch (exportError) {
+          console.error("Create USDZ for AR Quick Look failed", exportError);
+          arEngineRef.current = "unsupported";
+          setArEngine("unsupported");
+        }
+        return;
+      }
+
+      const xr = (navigator as Navigator & { xr?: XRSystemLike }).xr;
+      if (xr) {
+        try {
+          const supported = await xr.isSessionSupported("immersive-ar");
+          if (disposed) return;
+          if (supported) {
+            arEngineRef.current = "webxr";
+            setArEngine("webxr");
+            return;
+          }
+        } catch {
+          // Fall through to unsupported state.
+        }
+      }
+
+      if (!disposed) {
+        arEngineRef.current = "unsupported";
+        setArEngine("unsupported");
+      }
+    };
 
     const loader = new GLTFLoader();
     loader.load(
       assetUrl,
       (gltf) => {
+        if (disposed) return;
         const object = gltf.scene;
         object.traverse((child) => {
-          if (child instanceof THREE.Mesh) {
-            child.castShadow = true;
-            child.receiveShadow = true;
-            const materials = Array.isArray(child.material) ? child.material : [child.material];
-            materials.forEach((material) => {
-              if ("map" in material && material.map instanceof THREE.Texture) {
-                material.map.colorSpace = THREE.SRGBColorSpace;
-              }
-            });
-          }
+          if (!(child instanceof THREE.Mesh)) return;
+          child.castShadow = true;
+          child.receiveShadow = true;
+          const materials = Array.isArray(child.material) ? child.material : [child.material];
+          materials.forEach((material) => {
+            if ("map" in material && material.map instanceof THREE.Texture) material.map.colorSpace = THREE.SRGBColorSpace;
+          });
         });
 
         const box = new THREE.Box3().setFromObject(object);
         const size = box.getSize(new THREE.Vector3());
         const center = box.getCenter(new THREE.Vector3());
-        object.position.sub(center);
         const largest = Math.max(size.x, size.y, size.z) || 1;
-        const scale = 2.3 / largest;
-        object.scale.setScalar(scale);
+        const normalizingScale = 1 / largest;
+        object.position.set(-center.x, -box.min.y, -center.z);
+        object.scale.setScalar(normalizingScale);
         root.add(object);
+        root.updateMatrixWorld(true);
 
-        const scaledHeight = size.y * scale;
-        floor.position.y = -scaledHeight / 2 - 0.08;
-        camera.position.set(0, Math.max(0.15, scaledHeight * 0.08), 4.25);
-        controls.target.set(0, 0, 0);
+        const normalizedHeight = size.y * normalizingScale;
+        controls.target.set(0, Math.min(0.46, Math.max(0.18, normalizedHeight * 0.48)), 0);
+        camera.position.set(1.45, Math.max(0.7, normalizedHeight * 0.78), 2.6);
         controls.update();
         controls.saveState();
+
+        modelReadyRef.current = true;
         setLoading(false);
+        void prepareArEngine();
       },
       (event) => {
         if (event.total > 0) setProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
       },
       (loadError) => {
         console.error(loadError);
-        setError("Không thể đọc model. Hãy kiểm tra lại file GLB.");
+        if (disposed) return;
+        setError("Không thể đọc model. Hãy kiểm tra lại file GLB và texture của model.");
         setLoading(false);
       }
     );
 
-    const onOrientation = (event: DeviceOrientationEvent) => {
-      if (modeRef.current !== "motion" || event.alpha == null || event.beta == null || event.gamma == null) return;
-      if (!baselineRef.current) {
-        baselineRef.current = { alpha: event.alpha, beta: event.beta, gamma: event.gamma };
-        return;
-      }
-      const baseline = baselineRef.current;
-      const yaw = shortestAngle(event.alpha, baseline.alpha);
-      const pitch = event.beta - baseline.beta;
-      const roll = event.gamma - baseline.gamma;
-      targetRotationRef.current.set(
-        THREE.MathUtils.clamp(toRad(pitch) * 0.85, -1.15, 1.15),
-        toRad(yaw) * 1.1,
-        THREE.MathUtils.clamp(-toRad(roll) * 0.45, -0.55, 0.55),
-        "YXZ"
-      );
-    };
-    window.addEventListener("deviceorientation", onOrientation, true);
-
-    let frame = 0;
-    const clock = new THREE.Clock();
-    const animate = () => {
-      frame = requestAnimationFrame(animate);
-      const delta = Math.min(clock.getDelta(), 0.05);
-      controls.enabled = modeRef.current === "touch";
+    renderer.setAnimationLoop((_time, frame) => {
+      const inArSession = Boolean(sessionRef.current);
+      controls.enabled = modeRef.current === "object" && !inArSession;
       if (controls.enabled) controls.update();
-      if (modeRef.current === "motion") {
-        const factor = 1 - Math.exp(-8 * delta);
-        root.rotation.x = THREE.MathUtils.lerp(root.rotation.x, targetRotationRef.current.x, factor);
-        root.rotation.y = THREE.MathUtils.lerp(root.rotation.y, targetRotationRef.current.y, factor);
-        root.rotation.z = THREE.MathUtils.lerp(root.rotation.z, targetRotationRef.current.z, factor);
+
+      if (frame && inArSession && hitTestSourceRef.current && !placedRef.current) {
+        const referenceSpace = renderer.xr.getReferenceSpace();
+        if (referenceSpace) {
+          const results = frame.getHitTestResults(hitTestSourceRef.current);
+          if (results.length > 0) {
+            const pose = results[0].getPose(referenceSpace);
+            if (pose) {
+              reticle.visible = true;
+              reticle.matrix.fromArray(pose.transform.matrix);
+              if (!trackingReadyRef.current) {
+                trackingReadyRef.current = true;
+                setTrackingReady(true);
+              }
+            }
+          } else {
+            reticle.visible = false;
+            if (trackingReadyRef.current) {
+              trackingReadyRef.current = false;
+              setTrackingReady(false);
+            }
+          }
+        }
       }
+
       renderer.render(scene, camera);
-    };
-    animate();
+    });
 
     const resizeObserver = new ResizeObserver(() => {
       const width = container.clientWidth;
@@ -226,53 +503,137 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
     resizeObserver.observe(container);
 
     return () => {
-      cancelAnimationFrame(frame);
+      disposed = true;
       resizeObserver.disconnect();
-      window.removeEventListener("deviceorientation", onOrientation, true);
+      renderer.setAnimationLoop(null);
+      renderer.domElement.removeEventListener("touchstart", onTouchStart);
+      renderer.domElement.removeEventListener("touchmove", onTouchMove);
+      controller.removeEventListener("select", onSelect);
+      hitTestSourceRef.current?.cancel();
+      hitTestSourceRef.current = null;
+      void sessionRef.current?.end().catch(() => undefined);
+      sessionRef.current = null;
+      if (quickLookUrlRef.current) URL.revokeObjectURL(quickLookUrlRef.current);
+      quickLookUrlRef.current = null;
       controls.dispose();
-      scene.traverse((object) => {
-        if (object instanceof THREE.Mesh) {
-          object.geometry.dispose();
-          const materials = Array.isArray(object.material) ? object.material : [object.material];
-          materials.forEach((material) => {
-            Object.keys(material).forEach((key) => {
-              const value = (material as unknown as Record<string, unknown>)[key];
-              if (value instanceof THREE.Texture) value.dispose();
-            });
-            material.dispose();
+      scene.traverse((item) => {
+        if (!(item instanceof THREE.Mesh)) return;
+        item.geometry.dispose();
+        const materials = Array.isArray(item.material) ? item.material : [item.material];
+        materials.forEach((material) => {
+          Object.keys(material).forEach((keyName) => {
+            const value = (material as unknown as Record<string, unknown>)[keyName];
+            if (value instanceof THREE.Texture) value.dispose();
           });
-        }
+          material.dispose();
+        });
       });
       renderer.dispose();
       renderer.domElement.remove();
-      rootRef.current = null;
+      sceneRef.current = null;
+      rendererRef.current = null;
       controlsRef.current = null;
+      modelRootRef.current = null;
+      floorRef.current = null;
+      reticleRef.current = null;
     };
   }, [assetUrl]);
 
-  return (
-    <main className="viewer-shell">
-      <div ref={mountRef} className="viewer-canvas" />
+  const arButtonLabel = arEngine === "quicklook-preparing"
+    ? "Đang chuẩn bị AR…"
+    : arEngine === "quicklook"
+      ? "Mở AR trên iPhone"
+      : arEngine === "webxr"
+        ? "Bắt đầu AR"
+        : arEngine === "unsupported"
+          ? "AR không khả dụng"
+          : "Đang kiểm tra AR…";
 
-      <header className="viewer-header">
-        <Link href="/" className="viewer-brand">MS</Link>
-        <div><h1>{modelName}</h1>{description && <p>{description}</p>}</div>
-        <button type="button" className="icon-button" onClick={() => void enterFullscreen()} aria-label="Toàn màn hình">⛶</button>
+  return (
+    <main className={styles.shell} data-mode={mode}>
+      <div ref={mountRef} className={styles.canvas} />
+
+      <header className={styles.topbar}>
+        <button type="button" className={styles.roundButton} onClick={() => void closeViewer()} aria-label="Đóng viewer">
+          <span aria-hidden="true">×</span>
+        </button>
+
+        <div className={styles.modeSwitch} aria-label="Chế độ xem">
+          <button type="button" className={mode === "ar" ? styles.activeMode : ""} onClick={() => void startAR()}>AR</button>
+          <button type="button" className={mode === "object" ? styles.activeMode : ""} onClick={() => void showObject()}>Đối tượng</button>
+        </div>
+
+        <button type="button" className={styles.roundButton} onClick={() => void shareViewer()} aria-label="Chia sẻ">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11m0-11 4 4m-4-4L8 7M5 11v8h14v-8" /></svg>
+        </button>
       </header>
 
-      {loading && <div className="viewer-loader"><div className="loader-ring" /><strong>Đang tải model</strong><span>{progress ? `${progress}%` : "Đang chuẩn bị không gian 3D…"}</span></div>}
-      {error && <div className="viewer-error"><strong>Không thể hiển thị</strong><p>{error}</p></div>}
+      {loading && (
+        <div className={styles.loader}>
+          <div className={styles.spinner} />
+          <strong>Đang tải model</strong>
+          <span>{progress ? `${progress}%` : "Đang chuẩn bị mô hình 3D…"}</span>
+        </div>
+      )}
 
-      <aside className="viewer-hint">
-        <span>{mode === "touch" ? "Dùng một ngón để xoay · hai ngón để thu phóng" : "Di chuyển điện thoại để quan sát model"}</span>
-        {motionMessage && <small>{motionMessage}</small>}
-      </aside>
+      {error && (
+        <div className={styles.errorPanel}>
+          <strong>Không thể hiển thị</strong>
+          <p>{error}</p>
+          <button type="button" onClick={() => { setError(""); void showObject(); }}>Xem chế độ đối tượng</button>
+        </div>
+      )}
 
-      <div className="viewer-toolbar">
-        <button type="button" className={mode === "touch" ? "active" : ""} onClick={() => setMode("touch")}><span>✦</span><small>Chạm</small></button>
-        <button type="button" className={mode === "motion" ? "active" : ""} onClick={() => void enableMotion()}><span>◉</span><small>Chuyển động</small></button>
-        <button type="button" onClick={resetView}><span>↺</span><small>Đặt lại</small></button>
-      </div>
+      {!loading && !error && mode === "ar" && !arActive && (
+        <section className={styles.arLaunch}>
+          <div className={styles.phonePlaneIcon} aria-hidden="true">
+            <span className={styles.plane} />
+            <span className={styles.phone} />
+          </div>
+          <strong>{arEngine === "unsupported" ? "Thiết bị này chưa hỗ trợ AR" : "Xem model trong không gian thật"}</strong>
+          <p>
+            {arEngine === "quicklook"
+              ? "AR sẽ mở bằng Quick Look để đặt model lên mặt phẳng và tương tác trực tiếp bằng tay."
+              : arEngine === "webxr"
+                ? "Camera sẽ tìm mặt phẳng thực tế. Di chuyển điện thoại, chạm để đặt model rồi xoay hoặc thu phóng bằng tay."
+                : arEngine === "quicklook-preparing"
+                  ? "Đang chuyển GLB sang USDZ bằng Three.js để mở AR Quick Look trên iPhone."
+                  : arEngine === "unsupported"
+                    ? "Bạn vẫn có thể xoay và thu phóng model trong chế độ Đối tượng."
+                    : "Đang kiểm tra khả năng AR của trình duyệt…"}
+          </p>
+          <button
+            type="button"
+            className={styles.arButton}
+            disabled={arEngine === "checking" || arEngine === "quicklook-preparing" || arEngine === "unsupported"}
+            onClick={() => void startAR()}
+          >
+            {arButtonLabel}
+          </button>
+        </section>
+      )}
+
+      {!loading && !error && mode === "ar" && arActive && !placed && (
+        <div className={styles.arInstruction}>
+          <div className={styles.phonePlaneIcon} aria-hidden="true">
+            <span className={styles.plane} />
+            <span className={styles.phone} />
+          </div>
+          <strong>{trackingReady ? "Chạm để đặt mô hình" : "Di chuyển điện thoại để bắt đầu"}</strong>
+          <span>{trackingReady ? "Đã tìm thấy mặt phẳng" : "Hướng camera xuống sàn hoặc mặt bàn"}</span>
+        </div>
+      )}
+
+      {!loading && !error && mode === "ar" && arActive && placed && (
+        <div className={styles.gestureHint}>Di chuyển điện thoại để đổi góc nhìn · vuốt model để xoay · chụm hai ngón để đổi kích thước</div>
+      )}
+
+      {!loading && !error && mode === "object" && (
+        <div className={styles.objectHint}>Vuốt để xoay · chụm hai ngón để thu phóng</div>
+      )}
+
+      {shareMessage && <div className={styles.toast}>{shareMessage}</div>}
+      <span className={styles.srOnly}>{modelName}. {description}</span>
     </main>
   );
 }
