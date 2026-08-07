@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { ModelViewer } from "@/components/model-viewer-fixed";
+import { ModelViewer } from "@/components/model-viewer-ar";
 import { getModel } from "@/lib/models";
 
 export const dynamic = "force-dynamic";
