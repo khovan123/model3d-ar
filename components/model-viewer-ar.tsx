@@ -94,7 +94,7 @@ function getInteractionCamera() {
   if (!activeRenderer || !activeRenderCamera) return null;
   if (!activeRenderer.xr.isPresenting) return activeRenderCamera;
 
-  const xrCamera = activeRenderer.xr.getCamera(activeRenderCamera as THREE.PerspectiveCamera);
+  const xrCamera = activeRenderer.xr.getCamera();
   if (xrCamera instanceof THREE.ArrayCamera && xrCamera.cameras.length > 0) {
     return xrCamera.cameras[0];
   }
