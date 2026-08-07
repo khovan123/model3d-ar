@@ -435,7 +435,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
         event.preventDefault();
         const dx = touch.clientX - gestureLastX;
         const dy = touch.clientY - gestureLastY;
-        const xrCamera = renderer.xr.getCamera(camera);
+        const xrCamera = renderer.xr.getCamera();
         xrCamera.getWorldPosition(cameraPosition);
         xrCamera.getWorldDirection(cameraForward);
         cameraForward.y = 0;
