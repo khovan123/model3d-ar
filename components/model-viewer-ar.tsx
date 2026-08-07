@@ -1,15 +1,18 @@
 "use client";
 
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { USDZExporter } from "three/addons/exporters/USDZExporter.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import * as WebGLTextureUtils from "three/addons/utils/WebGLTextureUtils.js";
 import { ModelViewer as BaseModelViewer } from "./model-viewer-fixed";
+import styles from "./model-viewer.module.css";
 
 type Props = {
   modelName: string;
   description: string;
   assetUrl: string;
+  audioUrl?: string;
 };
 
 type TextureSlot =
@@ -37,14 +40,15 @@ const TEXTURE_SLOTS: TextureSlot[] = [
 
 const activeMixers = new Set<THREE.AnimationMixer>();
 let activeAnimationClip: THREE.AnimationClip | null = null;
+let activeModelScene: THREE.Object3D | null = null;
+let activeModelAnchorLocal = new THREE.Vector3(0, 1.08, 0);
+let activeRenderer: THREE.WebGLRenderer | null = null;
+let activeRenderCamera: THREE.Camera | null = null;
 
 function clipPriority(clip: THREE.AnimationClip, index: number) {
   const name = clip.name.trim().toLowerCase();
   let score = 0;
 
-  // Prefer a model-level/default clip over small per-part clips. This makes
-  // assets such as "Anim Blye" play their intended main animation without
-  // hard-coding an asset-specific clip name.
   if (/^(anim|animation)(\b|[_.-])/.test(name)) score = 100;
   else if (/(^|[\s_.-])(main|default|idle|loop)([\s_.-]|$)/.test(name)) score = 90;
   else if (/(^|[\s_.-])(take|action)([\s_.-]|$)/.test(name)) score = 75;
@@ -77,6 +81,41 @@ function stopActiveMixers() {
   activeAnimationClip = null;
 }
 
+function isHierarchyVisible(object: THREE.Object3D) {
+  let current: THREE.Object3D | null = object;
+  while (current) {
+    if (!current.visible) return false;
+    current = current.parent;
+  }
+  return true;
+}
+
+function getInteractionCamera() {
+  if (!activeRenderer || !activeRenderCamera) return null;
+  if (!activeRenderer.xr.isPresenting) return activeRenderCamera;
+
+  const xrCamera = activeRenderer.xr.getCamera(activeRenderCamera as THREE.PerspectiveCamera);
+  if (xrCamera instanceof THREE.ArrayCamera && xrCamera.cameras.length > 0) {
+    return xrCamera.cameras[0];
+  }
+  return xrCamera;
+}
+
+function installRenderTracking() {
+  const prototype = THREE.WebGLRenderer.prototype as THREE.WebGLRenderer & {
+    __modelSpaceRenderTrackingPatch?: boolean;
+  };
+  if (prototype.__modelSpaceRenderTrackingPatch) return;
+  prototype.__modelSpaceRenderTrackingPatch = true;
+
+  const originalRender = THREE.WebGLRenderer.prototype.render;
+  THREE.WebGLRenderer.prototype.render = function (scene: THREE.Object3D, camera: THREE.Camera) {
+    activeRenderer = this;
+    activeRenderCamera = camera;
+    return originalRender.call(this, scene, camera);
+  };
+}
+
 function installGLTFAnimationPlayback() {
   const loaderPrototype = GLTFLoader.prototype as GLTFLoader & {
     __modelSpaceAnimationPatch?: boolean;
@@ -95,9 +134,17 @@ function installGLTFAnimationPlayback() {
     onError?: LoadArguments[3]
   ) {
     const wrappedOnLoad: LoadCallback = (gltf) => {
-      // This viewer shows one GLB at a time. Stop a previous asset's mixer if
-      // the route/model changes before registering the new one.
       stopActiveMixers();
+      activeModelScene = gltf.scene;
+
+      const bounds = new THREE.Box3().setFromObject(gltf.scene);
+      const size = bounds.getSize(new THREE.Vector3());
+      const center = bounds.getCenter(new THREE.Vector3());
+      activeModelAnchorLocal = new THREE.Vector3(
+        center.x,
+        bounds.max.y + Math.max(0.04, size.y * 0.08),
+        center.z
+      );
 
       const clip = chooseDefaultClip(gltf.animations);
       if (clip) {
@@ -154,8 +201,6 @@ function installGLTFAnimationPlayback() {
     rendererTimes.set(this, performance.now());
     const wrapped: NonNullable<AnimationLoop> = (time, frame) => {
       const previous = rendererTimes.get(this) ?? time;
-      // Clamp after tab/background switches so a model does not jump several
-      // seconds forward in a single frame.
       const delta = THREE.MathUtils.clamp((time - previous) / 1000, 0, 0.1);
       rendererTimes.set(this, time);
       activeMixers.forEach((mixer) => mixer.update(delta));
@@ -249,9 +294,6 @@ function canvasFromDrawableTexture(texture: THREE.Texture, maxTextureSize = 2048
 }
 
 function bakeTexture(texture: THREE.Texture, ownedTextures: Set<THREE.Texture>) {
-  // Compressed GPU textures are handled by USDZExporter through
-  // WebGLTextureUtils. Keeping the original object here lets the exporter
-  // invoke its official decompression path.
   if (texture instanceof THREE.CompressedTexture) return texture;
 
   const canvas = canvasFromDrawableTexture(texture);
@@ -326,9 +368,179 @@ function installUSDZTextureCompatibility() {
   };
 }
 
+installRenderTracking();
 installGLTFAnimationPlayback();
 installUSDZTextureCompatibility();
 
-export function ModelViewer(props: Props) {
-  return <BaseModelViewer {...props} />;
+export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Props) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const labelRef = useRef<HTMLButtonElement>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const pointerStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [audioAvailable, setAudioAvailable] = useState(false);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+
+  const toggleAudio = useCallback(async () => {
+    const audio = audioRef.current;
+    if (!audio || !audioAvailable) return;
+
+    if (!audio.paused) {
+      audio.pause();
+      setAudioPlaying(false);
+      return;
+    }
+
+    try {
+      await audio.play();
+      setAudioPlaying(true);
+    } catch (error) {
+      console.warn("Unable to play model audio", error);
+      setAudioPlaying(false);
+    }
+  }, [audioAvailable]);
+
+  const inspectModelAt = useCallback((clientX: number, clientY: number) => {
+    if (!activeModelScene || !activeRenderer || !isHierarchyVisible(activeModelScene)) return;
+    const camera = getInteractionCamera();
+    if (!camera) return;
+
+    const rect = activeRenderer.domElement.getBoundingClientRect();
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return;
+
+    const pointer = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(pointer, camera);
+    const hits = raycaster.intersectObject(activeModelScene, true);
+    if (hits.length > 0) setInfoOpen(true);
+  }, []);
+
+  const onPointerDownCapture = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (target instanceof Element && target.closest("button, a, input, textarea")) {
+      pointerStartRef.current = null;
+      return;
+    }
+    pointerStartRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+  }, []);
+
+  const onPointerUpCapture = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const start = pointerStartRef.current;
+    pointerStartRef.current = null;
+    if (!start || start.pointerId !== event.pointerId) return;
+    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) return;
+    inspectModelAt(event.clientX, event.clientY);
+  }, [inspectModelAt]);
+
+  useEffect(() => {
+    let raf = 0;
+    const worldAnchor = new THREE.Vector3();
+    const projected = new THREE.Vector3();
+
+    const updateLabel = () => {
+      const label = labelRef.current;
+      const model = activeModelScene;
+      const renderer = activeRenderer;
+      const camera = getInteractionCamera();
+
+      if (!label || !model || !renderer || !camera || !isHierarchyVisible(model)) {
+        if (label) label.style.opacity = "0";
+        raf = requestAnimationFrame(updateLabel);
+        return;
+      }
+
+      worldAnchor.copy(activeModelAnchorLocal);
+      model.localToWorld(worldAnchor);
+      projected.copy(worldAnchor).project(camera);
+
+      if (projected.z < -1 || projected.z > 1 || !Number.isFinite(projected.x) || !Number.isFinite(projected.y)) {
+        label.style.opacity = "0";
+        raf = requestAnimationFrame(updateLabel);
+        return;
+      }
+
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = rect.left + (projected.x * 0.5 + 0.5) * rect.width;
+      const y = rect.top + (-projected.y * 0.5 + 0.5) * rect.height;
+      label.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -100%)`;
+      label.style.opacity = "1";
+      raf = requestAnimationFrame(updateLabel);
+    };
+
+    raf = requestAnimationFrame(updateLabel);
+    return () => {
+      cancelAnimationFrame(raf);
+      activeModelScene = null;
+      activeRenderer = null;
+      activeRenderCamera = null;
+      stopActiveMixers();
+    };
+  }, [assetUrl]);
+
+  return (
+    <div
+      ref={hostRef}
+      className={styles.viewerHost}
+      onPointerDownCapture={onPointerDownCapture}
+      onPointerUpCapture={onPointerUpCapture}
+    >
+      <BaseModelViewer modelName={modelName} description={description} assetUrl={assetUrl} />
+
+      <button
+        ref={labelRef}
+        type="button"
+        className={styles.modelNameLabel}
+        onClick={() => setInfoOpen(true)}
+        aria-label={`Xem thông tin ${modelName}`}
+      >
+        <span>{modelName}</span>
+        <small>Chạm để xem</small>
+      </button>
+
+      {audioUrl && (
+        <audio
+          ref={audioRef}
+          src={audioUrl}
+          preload="metadata"
+          playsInline
+          onCanPlay={() => setAudioAvailable(true)}
+          onError={() => { setAudioAvailable(false); setAudioPlaying(false); }}
+          onEnded={() => setAudioPlaying(false)}
+        />
+      )}
+
+      {infoOpen && (
+        <>
+          <button
+            type="button"
+            className={styles.infoBackdrop}
+            aria-label="Đóng thông tin model"
+            onClick={() => setInfoOpen(false)}
+          />
+          <section className={styles.modelInfoCard} aria-label={`Thông tin ${modelName}`}>
+            <button
+              type="button"
+              className={styles.infoClose}
+              onClick={() => setInfoOpen(false)}
+              aria-label="Đóng"
+            >
+              ×
+            </button>
+            <small>MODEL</small>
+            <h2>{modelName}</h2>
+            <p>{description || "Model này chưa có mô tả."}</p>
+            {audioAvailable && (
+              <button type="button" className={styles.audioButton} onClick={() => void toggleAudio()}>
+                <span aria-hidden="true">{audioPlaying ? "❚❚" : "▶"}</span>
+                {audioPlaying ? "Tạm dừng âm thanh" : "Phát âm thanh"}
+              </button>
+            )}
+          </section>
+        </>
+      )}
+    </div>
+  );
 }
