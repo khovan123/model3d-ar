@@ -2,6 +2,7 @@
 
 import * as THREE from "three";
 import { USDZExporter } from "three/addons/exporters/USDZExporter.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import * as WebGLTextureUtils from "three/addons/utils/WebGLTextureUtils.js";
 import { ModelViewer as BaseModelViewer } from "./model-viewer-fixed";
 
@@ -33,6 +34,134 @@ const TEXTURE_SLOTS: TextureSlot[] = [
   "clearcoatMap",
   "clearcoatRoughnessMap"
 ];
+
+const activeMixers = new Set<THREE.AnimationMixer>();
+
+function clipPriority(clip: THREE.AnimationClip, index: number) {
+  const name = clip.name.trim().toLowerCase();
+  let score = 0;
+
+  // Prefer a model-level/default clip over small per-part clips. This makes
+  // assets such as "Anim Blye" play their intended main animation without
+  // hard-coding an asset-specific clip name.
+  if (/^(anim|animation)(\b|[_.-])/.test(name)) score = 100;
+  else if (/(^|[\s_.-])(main|default|idle|loop)([\s_.-]|$)/.test(name)) score = 90;
+  else if (/(^|[\s_.-])(take|action)([\s_.-]|$)/.test(name)) score = 75;
+
+  if (clip.duration > 0) score += 10;
+  return score - index * 0.001;
+}
+
+function chooseDefaultClip(clips: THREE.AnimationClip[]) {
+  if (clips.length === 0) return null;
+
+  let best = clips[0];
+  let bestScore = clipPriority(best, 0);
+  for (let index = 1; index < clips.length; index += 1) {
+    const score = clipPriority(clips[index], index);
+    if (score > bestScore) {
+      best = clips[index];
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+function stopActiveMixers() {
+  activeMixers.forEach((mixer) => {
+    mixer.stopAllAction();
+    mixer.uncacheRoot(mixer.getRoot());
+  });
+  activeMixers.clear();
+}
+
+function installGLTFAnimationPlayback() {
+  const loaderPrototype = GLTFLoader.prototype as GLTFLoader & {
+    __modelSpaceAnimationPatch?: boolean;
+  };
+  if (loaderPrototype.__modelSpaceAnimationPatch) return;
+  loaderPrototype.__modelSpaceAnimationPatch = true;
+
+  const originalLoad = GLTFLoader.prototype.load;
+  type LoadArguments = Parameters<GLTFLoader["load"]>;
+  type LoadCallback = LoadArguments[1];
+
+  GLTFLoader.prototype.load = function (
+    url: LoadArguments[0],
+    onLoad: LoadCallback,
+    onProgress?: LoadArguments[2],
+    onError?: LoadArguments[3]
+  ) {
+    const wrappedOnLoad: LoadCallback = (gltf) => {
+      // This viewer shows one GLB at a time. Stop a previous asset's mixer if
+      // the route/model changes before registering the new one.
+      stopActiveMixers();
+
+      const clip = chooseDefaultClip(gltf.animations);
+      if (clip) {
+        const mixer = new THREE.AnimationMixer(gltf.scene);
+        const action = mixer.clipAction(clip);
+        action.reset();
+        action.enabled = true;
+        action.setEffectiveWeight(1);
+        action.setEffectiveTimeScale(1);
+        action.setLoop(THREE.LoopRepeat, Infinity);
+        action.play();
+        activeMixers.add(mixer);
+
+        gltf.scene.userData.modelSpaceAnimation = {
+          animated: true,
+          clip: clip.name,
+          clipCount: gltf.animations.length,
+          duration: clip.duration
+        };
+        console.info(
+          `[ModelSpace] Playing animation "${clip.name}" (${clip.duration.toFixed(2)}s) from ${gltf.animations.length} clip(s).`
+        );
+      } else {
+        gltf.scene.userData.modelSpaceAnimation = {
+          animated: false,
+          clipCount: 0
+        };
+        console.info("[ModelSpace] Static GLB: no embedded animation clips.");
+      }
+
+      onLoad(gltf);
+    };
+
+    return originalLoad.call(this, url, wrappedOnLoad, onProgress, onError);
+  };
+
+  const rendererPrototype = THREE.WebGLRenderer.prototype as THREE.WebGLRenderer & {
+    __modelSpaceAnimationLoopPatch?: boolean;
+  };
+  if (rendererPrototype.__modelSpaceAnimationLoopPatch) return;
+  rendererPrototype.__modelSpaceAnimationLoopPatch = true;
+
+  const originalSetAnimationLoop = THREE.WebGLRenderer.prototype.setAnimationLoop;
+  const rendererTimes = new WeakMap<THREE.WebGLRenderer, number>();
+  type AnimationLoop = Parameters<THREE.WebGLRenderer["setAnimationLoop"]>[0];
+
+  THREE.WebGLRenderer.prototype.setAnimationLoop = function (callback: AnimationLoop) {
+    if (!callback) {
+      rendererTimes.delete(this);
+      return originalSetAnimationLoop.call(this, null);
+    }
+
+    rendererTimes.set(this, performance.now());
+    const wrapped: NonNullable<AnimationLoop> = (time, frame) => {
+      const previous = rendererTimes.get(this) ?? time;
+      // Clamp after tab/background switches so a model does not jump several
+      // seconds forward in a single frame.
+      const delta = THREE.MathUtils.clamp((time - previous) / 1000, 0, 0.1);
+      rendererTimes.set(this, time);
+      activeMixers.forEach((mixer) => mixer.update(delta));
+      callback(time, frame);
+    };
+
+    return originalSetAnimationLoop.call(this, wrapped);
+  };
+}
 
 function copyTextureSettings(source: THREE.Texture, target: THREE.Texture) {
   target.name = source.name;
@@ -68,7 +197,7 @@ function canvasFromDataTexture(image: unknown) {
   let rgba: Uint8ClampedArray<ArrayBuffer>;
 
   if (data.length === pixelCount * 4) {
-    rgba = new Uint8ClampedArray(data.length);
+    rgba = new Uint8ClampedArray(pixelCount * 4);
     rgba.set(data);
   } else if (data.length === pixelCount * 3) {
     rgba = new Uint8ClampedArray(pixelCount * 4);
@@ -186,6 +315,7 @@ function installUSDZTextureCompatibility() {
   };
 }
 
+installGLTFAnimationPlayback();
 installUSDZTextureCompatibility();
 
 export function ModelViewer(props: Props) {
