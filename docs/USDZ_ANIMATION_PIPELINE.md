@@ -23,7 +23,7 @@ van duoc giu lam fallback cho model chua co USDZ hoac conversion that bai.
 ## Kien truc
 
 ```text
-Studio upload GLB/FBX/OBJ/DAE/BLEND/...
+Studio upload GLB/FBX/OBJ/DAE/BLEND/ZIP/...
       |
       v
 Supabase Storage: models/{id}.{ext}
@@ -123,15 +123,31 @@ Truoc khi goi Blender, worker doc JSON chunk cua GLB va dem `animations[].channe
 Neu khong co channel, job chuyen sang `skipped`; Blender, `usdzip` va upload USDZ
 deu khong chay cho model do.
 
-Studio queue `.gltf`, `.fbx`, `.obj`, `.stl`, `.dae`, `.ply`, `.3mf`, `.blend`
-va `.usdz` vao phase GLB. `.glb` bo qua import vi da la asset viewer. `.usdz`
+Studio queue `.gltf`, `.fbx`, `.obj`, `.stl`, `.dae`, `.ply`, `.3mf`, `.blend`,
+`.usdz` va `.zip` vao phase GLB. `.glb` bo qua import vi da la asset viewer. `.usdz`
 upload san duoc danh dau `usdz_status=ready`, nhung van co the vao phase GLB de
 web viewer su dung.
 
-Luu y file upload hien la mot object duy nhat. `.gltf`, `.obj` va `.dae` chi
-convert duoc neu texture/buffer da embedded hoac khong can file phu. File tham
-chieu `.bin`, `.mtl` hay texture ben ngoai can mot phase package ZIP rieng; worker
-khong the tu tim cac dependency chua duoc upload.
+Voi model co file phu, nen upload `.zip` giu nguyen cau truc thu muc. Worker giai
+nen, tu chon model chinh va de Blender resolve `.bin`, `.mtl` va texture theo
+duong dan tuong doi. ZIP co mot `.glb` goc se duoc copy nguyen sang
+`converted/{id}.glb` neu GLB da self-contained. Neu GLB tham chieu texture ngoai,
+worker import lai bang Blender va dong goi texture vao GLB dau ra.
+
+Vi du package GLB co texture ngoai:
+
+```text
+original-model.zip
+  source/model.glb
+  textures/base-color.png
+  textures/normal.png
+```
+
+Duong dan trong `model.glb` phai khop cau truc ZIP, vi du `../textures/base-color.png`.
+
+Thu tu uu tien file model trong ZIP la `.glb`, `.gltf`, `.fbx`, `.blend`, `.dae`,
+`.obj`, `.3mf`, `.stl`, `.ply`, `.usdz`. Neu co nhieu file cung loai, worker uu
+tien file nam gan root archive, sau do uu tien file lon hon.
 
 Worker chi chay mot job tai mot thoi diem. Chay mot lan:
 
@@ -150,6 +166,7 @@ Bien moi truong:
 | Bien | Mac dinh | Mo ta |
 | --- | --- | --- |
 | `BLENDER_BIN` | `blender` | Duong dan Blender CLI |
+| `UNZIP_BIN` | `unzip` | Cong cu giai nen package model |
 | `USDZIP_BIN` | `usdzip` | Duong dan OpenUSD usdzip |
 | `USDZ_WORK_DIR` | OS temp dir | Thu muc tam |
 | `USDZ_POLL_INTERVAL_MS` | `15000` | Chu ky poll job |
@@ -157,6 +174,7 @@ Bien moi truong:
 | `USDZ_MAX_ATTEMPTS` | `3` | So lan retry toi da |
 | `USDZ_MAX_FILE_SIZE_MB` | `200` | Gioi han file USDZ dau ra |
 | `MODEL_ASSET_MAX_FILE_SIZE_MB` | `250` | Gioi han GLB sau phase 1 |
+| `MODEL_PACKAGE_MAX_UNCOMPRESSED_MB` | `500` | Gioi han tong dung luong ZIP sau giai nen |
 | `USDZ_TARGET_SIZE_METERS` | `0.32` | Canh lon nhat cua model trong Quick Look |
 | `USDZ_KEEP_FAILED_WORK_DIR` | `false` | Giu thu muc tam khi can debug conversion |
 

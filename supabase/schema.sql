@@ -59,7 +59,7 @@ set
   usdz_attempts = 0,
   usdz_updated_at = now()
 where usdz_status = 'unsupported'
-  and coalesce(storage_path, '') ~* '\.(glb|gltf|obj|fbx|stl|dae|ply|3mf|blend)$';
+  and coalesce(storage_path, '') ~* '\.(glb|gltf|obj|fbx|stl|dae|ply|3mf|blend|zip)$';
 
 do $$
 begin
@@ -123,6 +123,8 @@ values (
     'model/stl',
     'model/vnd.collada+xml',
     'model/3mf',
+    'application/zip',
+    'application/x-zip-compressed',
     'application/octet-stream',
     'audio/mpeg',
     'audio/mp3',

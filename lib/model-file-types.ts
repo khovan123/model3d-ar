@@ -14,7 +14,8 @@ const MODEL_FILE_TYPES: ModelFileType[] = [
   { extension: "dae", mimeType: "model/vnd.collada+xml", canConvertToGlb: true },
   { extension: "ply", mimeType: "application/octet-stream", canConvertToGlb: true },
   { extension: "3mf", mimeType: "model/3mf", canConvertToGlb: true },
-  { extension: "blend", mimeType: "application/octet-stream", canConvertToGlb: true }
+  { extension: "blend", mimeType: "application/octet-stream", canConvertToGlb: true },
+  { extension: "zip", mimeType: "application/zip", canConvertToGlb: true }
 ];
 
 export const SUPPORTED_MODEL_EXTENSIONS = MODEL_FILE_TYPES.map((item) => item.extension);

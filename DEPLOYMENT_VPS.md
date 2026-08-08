@@ -39,6 +39,8 @@ sudo apt install -y \
   libboost-all-dev \
   libtbb-dev
 
+sudo apt install -y unzip
+
 cd /tmp
 git clone --depth 1 --branch v25.05 \
   https://github.com/PixarAnimationStudios/OpenUSD.git
@@ -125,10 +127,12 @@ Với Ubuntu 24.04 và OpenUSD được build trong `/opt/openusd`, cấu hình 
 
 ```env
 BLENDER_BIN=/snap/bin/blender
+UNZIP_BIN=/usr/bin/unzip
 USDZIP_BIN=/opt/openusd/bin/usdzip
 USDCAT_BIN=/opt/openusd/bin/usdcat
 PYTHONPATH=/opt/openusd/lib/python
 LD_LIBRARY_PATH=/opt/openusd/lib
+MODEL_PACKAGE_MAX_UNCOMPRESSED_MB=500
 ```
 
 Nếu VPS không dùng được Snap, có thể cài Blender từ `apt`:

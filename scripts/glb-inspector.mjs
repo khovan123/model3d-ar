@@ -48,12 +48,20 @@ export async function inspectGlbAnimations(filePath) {
           (count, animation) => count + (Array.isArray(animation?.channels) ? animation.channels.length : 0),
           0
         );
+        const externalResourceUris = [
+          ...(Array.isArray(document.buffers) ? document.buffers : []),
+          ...(Array.isArray(document.images) ? document.images : [])
+        ]
+          .map((resource) => typeof resource?.uri === "string" ? resource.uri : null)
+          .filter((uri) => uri && !uri.startsWith("data:"));
 
         return {
           hasAnimations: animations.length > 0 && channels > 0,
           animationClips: animations.length,
           animationChannels: channels,
-          skins: Array.isArray(document.skins) ? document.skins.length : 0
+          skins: Array.isArray(document.skins) ? document.skins.length : 0,
+          externalResources: externalResourceUris.length,
+          externalResourceUris: externalResourceUris.slice(0, 50)
         };
       }
 

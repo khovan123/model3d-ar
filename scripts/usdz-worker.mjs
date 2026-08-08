@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
-import { access, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { access, copyFile, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -45,6 +45,7 @@ const supabaseUrl = process.env.SUPABASE_URL
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const bucket = process.env.SUPABASE_STORAGE_BUCKET ?? "models";
 const blenderBin = process.env.BLENDER_BIN ?? "blender";
+const unzipBin = process.env.UNZIP_BIN ?? "unzip";
 const usdzipBin = process.env.USDZIP_BIN ?? "usdzip";
 const usdcatBin = process.env.USDCAT_BIN ?? "usdcat";
 const pollIntervalMs = positiveNumber(process.env.USDZ_POLL_INTERVAL_MS, 15000);
@@ -52,11 +53,13 @@ const staleAfterMinutes = positiveNumber(process.env.USDZ_STALE_AFTER_MINUTES, 3
 const maxAttempts = positiveNumber(process.env.USDZ_MAX_ATTEMPTS, 3);
 const maxFileSize = positiveNumber(process.env.USDZ_MAX_FILE_SIZE_MB, 200) * 1024 * 1024;
 const maxAssetFileSize = positiveNumber(process.env.MODEL_ASSET_MAX_FILE_SIZE_MB, 250) * 1024 * 1024;
+const maxPackageUncompressedSize = positiveNumber(process.env.MODEL_PACKAGE_MAX_UNCOMPRESSED_MB, 500) * 1024 * 1024;
 const targetSizeMeters = positiveNumber(process.env.USDZ_TARGET_SIZE_METERS, 0.32);
 const keepFailedWorkDir = process.env.USDZ_KEEP_FAILED_WORK_DIR === "true";
 const workRoot = process.env.USDZ_WORK_DIR ?? os.tmpdir();
 const blenderScript = path.join(process.cwd(), "scripts", "blender", "glb_to_usd.py");
 const sourceToGlbScript = path.join(process.cwd(), "scripts", "blender", "source_to_glb.py");
+const packageModelPriority = ["glb", "gltf", "fbx", "blend", "dae", "obj", "3mf", "stl", "ply", "usdz"];
 
 function positiveNumber(value, fallback) {
   const parsed = Number(value);
@@ -69,6 +72,20 @@ function getModelExtension(fileNameOrPath) {
   const dot = name.lastIndexOf(".");
   if (dot < 0 || dot === name.length - 1) return null;
   return name.slice(dot + 1).toLowerCase();
+}
+
+function validatePackageEntry(entry) {
+  const normalized = entry.replaceAll("\\", "/");
+  const segments = normalized.split("/");
+  if (
+    !normalized ||
+    normalized.startsWith("/") ||
+    /^[a-zA-Z]:\//.test(normalized) ||
+    segments.includes("..")
+  ) {
+    throw new Error(`ZIP contains an unsafe path: ${entry}`);
+  }
+  return normalized;
 }
 
 function requireConfig() {
@@ -259,22 +276,99 @@ async function runCommand(command, commandArgs, options = {}) {
     });
     let stdout = "";
     let stderr = "";
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     const maxOutputLength = options.maxOutputLength ?? 40000;
-    const append = (current, chunk) => {
+    const append = (current, chunk, markTruncated) => {
       const next = `${current}${chunk}`;
       if (maxOutputLength === 0) return next;
+      if (next.length > maxOutputLength) markTruncated();
       return options.keepOutputStart
         ? next.slice(0, maxOutputLength)
         : next.slice(-maxOutputLength);
     };
-    child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
-    child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
+    child.stdout.on("data", (chunk) => {
+      stdout = append(stdout, chunk, () => { stdoutTruncated = true; });
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr = append(stderr, chunk, () => { stderrTruncated = true; });
+    });
     child.once("error", reject);
     child.once("exit", (code) => {
-      if (code === 0) resolve({ stdout, stderr });
+      if (code === 0) resolve({ stdout, stderr, stdoutTruncated, stderrTruncated });
       else reject(new Error(`${command} exited with ${code}.\n${stderr || stdout}`));
     });
   });
+}
+
+async function extractModelPackage(archivePath, destination) {
+  const [entryListing, detailedListing] = await Promise.all([
+    runCommand(unzipBin, ["-Z1", archivePath], { keepOutputStart: true, maxOutputLength: 2 * 1024 * 1024 }),
+    runCommand(unzipBin, ["-Z", "-l", archivePath], { keepOutputStart: true, maxOutputLength: 2 * 1024 * 1024 })
+  ]);
+  if (entryListing.stdoutTruncated || detailedListing.stdoutTruncated) {
+    throw new Error("ZIP package listing is too large to validate safely.");
+  }
+  const entries = entryListing.stdout.split(/\r?\n/).filter(Boolean).map(validatePackageEntry);
+  if (entries.length === 0) throw new Error("ZIP package is empty.");
+  if (entries.length > 10000) throw new Error("ZIP package contains too many entries.");
+  if (/^l[-rwx]{9}\s/m.test(detailedListing.stdout)) {
+    throw new Error("ZIP package contains symbolic links, which are not allowed.");
+  }
+
+  const sizeMatch = detailedListing.stdout.match(/([\d,]+)\s+bytes uncompressed/i);
+  const uncompressedBytes = sizeMatch ? Number(sizeMatch[1].replaceAll(",", "")) : undefined;
+  if (uncompressedBytes !== undefined && uncompressedBytes > maxPackageUncompressedSize) {
+    throw new Error(
+      `ZIP package exceeds ${Math.round(maxPackageUncompressedSize / 1024 / 1024)} MB after extraction.`
+    );
+  }
+
+  await runCommand(unzipBin, ["-q", archivePath, "-d", destination]);
+  return { entries: entries.length, uncompressedBytes };
+}
+
+async function collectPackageModels(directory, root = directory) {
+  const items = await readdir(directory, { withFileTypes: true });
+  const models = [];
+  for (const item of items) {
+    if (item.name === "__MACOSX" || item.name.startsWith(".")) continue;
+    const itemPath = path.join(directory, item.name);
+    if (item.isSymbolicLink()) throw new Error(`ZIP package contains a symbolic link: ${item.name}`);
+    if (item.isDirectory()) {
+      models.push(...await collectPackageModels(itemPath, root));
+      continue;
+    }
+    if (!item.isFile()) continue;
+    const extension = getModelExtension(item.name);
+    const priority = extension ? packageModelPriority.indexOf(extension) : -1;
+    if (priority < 0) continue;
+    const fileStat = await stat(itemPath);
+    const relativePath = path.relative(root, itemPath);
+    models.push({
+      path: itemPath,
+      relativePath,
+      extension,
+      priority,
+      depth: relativePath.split(path.sep).length,
+      size: fileStat.size
+    });
+  }
+  return models;
+}
+
+async function selectPackageModel(directory) {
+  const models = await collectPackageModels(directory);
+  if (models.length === 0) {
+    throw new Error(`ZIP package does not contain a supported model file: ${packageModelPriority.map((item) => `.${item}`).join(", ")}.`);
+  }
+  models.sort((left, right) =>
+    left.priority - right.priority ||
+    left.depth - right.depth ||
+    right.size - left.size ||
+    left.relativePath.localeCompare(right.relativePath)
+  );
+  return { selected: models[0], candidates: models.length };
 }
 
 function blenderReport(stdout) {
@@ -339,21 +433,48 @@ async function convertAssetJob(job) {
 
   const tempDir = await mkdtemp(path.join(workRoot, "modelspace-asset-"));
   const inputPath = path.join(tempDir, `source.${extension}`);
+  const packageDir = path.join(tempDir, "package");
   const outputPath = path.join(tempDir, "model.glb");
   const storagePath = `converted/${job.id}.glb`;
   let completed = false;
 
   try {
     await downloadStorageObject(job.storage_path, inputPath);
-    const blenderResult = await runCommand(blenderBin, [
-      "--background",
-      "--factory-startup",
-      "--python",
-      sourceToGlbScript,
-      "--",
-      inputPath,
-      outputPath
-    ]);
+    let sourcePath = inputPath;
+    let sourceExtension = extension;
+    let packageInfo;
+    if (extension === "zip") {
+      const archive = await extractModelPackage(inputPath, packageDir);
+      const selection = await selectPackageModel(packageDir);
+      sourcePath = selection.selected.path;
+      sourceExtension = selection.selected.extension;
+      packageInfo = {
+        ...archive,
+        candidates: selection.candidates,
+        selected: selection.selected.relativePath,
+        selectedExtension: sourceExtension
+      };
+    }
+
+    let blenderResult;
+    let sourceGlb;
+    if (sourceExtension === "glb") {
+      sourceGlb = await inspectGlbAnimations(sourcePath);
+    }
+    const shouldRepackGlb = sourceExtension === "glb" && Number(sourceGlb?.externalResources ?? 0) > 0;
+    if (sourceExtension === "glb" && !shouldRepackGlb) {
+      await copyFile(sourcePath, outputPath);
+    } else {
+      blenderResult = await runCommand(blenderBin, [
+        "--background",
+        "--factory-startup",
+        "--python",
+        sourceToGlbScript,
+        "--",
+        sourcePath,
+        outputPath
+      ]);
+    }
     await access(outputPath);
     const outputStat = await stat(outputPath);
     if (outputStat.size < 1024) throw new Error("Generated GLB is unexpectedly empty.");
@@ -362,7 +483,12 @@ async function convertAssetJob(job) {
     }
 
     const glb = await inspectGlbAnimations(outputPath);
-    const blender = blenderReport(blenderResult.stdout);
+    if (glb.externalResources > 0) {
+      throw new Error(
+        `Generated GLB still references external resources: ${JSON.stringify(glb.externalResourceUris)}`
+      );
+    }
+    const blender = blenderResult ? blenderReport(blenderResult.stdout) : undefined;
     await uploadStorageObject(storagePath, outputPath, "model/gltf-binary");
     await updatePhaseJob(job.id, "asset", {
       asset_status: "ready",
@@ -372,12 +498,15 @@ async function convertAssetJob(job) {
     log("info", "Source model converted to viewer GLB.", {
       modelId: job.id,
       name: job.name,
-      sourceExtension: extension,
+      sourceExtension,
+      sourceGlb,
+      repackedExternalResources: shouldRepackGlb,
+      package: packageInfo,
       bytes: outputStat.size,
       storagePath,
       glb,
       blender,
-      blenderWarnings: blenderResult.stderr.trim() || undefined
+      blenderWarnings: blenderResult?.stderr.trim() || undefined
     });
     completed = true;
   } finally {
@@ -539,24 +668,27 @@ async function processOneJob() {
 async function checkEnvironment() {
   requireConfig();
   await Promise.all([access(blenderScript), access(sourceToGlbScript)]);
-  const [hasBlender, hasUsdzip] = await Promise.all([
+  const [hasBlender, hasUnzip, hasUsdzip] = await Promise.all([
     commandExists(blenderBin),
+    commandExists(unzipBin, ["-v"]),
     commandExists(usdzipBin, ["--help"])
   ]);
   const importers = hasBlender ? await inspectBlenderImporters().catch(() => undefined) : undefined;
   const result = {
     blender: hasBlender ? "ok" : "missing",
     importers,
+    unzip: hasUnzip ? "ok" : "missing",
     usdzip: hasUsdzip ? "ok" : "missing",
     usdcat: await commandExists(usdcatBin, ["--help"]) ? "ok" : "optional-missing",
     bucket,
     workRoot,
     maxAssetFileSizeMb: Math.round(maxAssetFileSize / 1024 / 1024),
+    maxPackageUncompressedSizeMb: Math.round(maxPackageUncompressedSize / 1024 / 1024),
     targetSizeMeters,
     keepFailedWorkDir
   };
-  log(hasBlender && hasUsdzip ? "info" : "error", "Environment check.", result);
-  if (!hasBlender || !hasUsdzip) process.exitCode = 1;
+  log(hasBlender && hasUnzip && hasUsdzip ? "info" : "error", "Environment check.", result);
+  if (!hasBlender || !hasUnzip || !hasUsdzip) process.exitCode = 1;
 }
 
 async function main() {

@@ -53,6 +53,26 @@ Kiem tra importer cua Blender VPS:
 Sau khi sua dependency/importer, bam `Chay lai GLB` trong Studio. Retry GLB cung
 reset phase USDZ de pipeline chay lai tu dau.
 
+Voi model co dependency, dong goi nguyen thu muc thanh ZIP:
+
+```text
+model-package.zip
+  model.gltf
+  model.bin
+  textures/base-color.png
+  textures/normal.png
+```
+
+Khong nen ZIP them mot lop thu muc khong can thiet, nhung worker van ho tro model
+nam trong subdirectory. ZIP bi tu choi neu co path `../`, absolute path, symbolic
+link, qua 10.000 entry, hoac vuot `MODEL_PACKAGE_MAX_UNCOMPRESSED_MB`.
+
+Voi package co `source/model.glb` va `textures/*.png`, worker doc JSON chunk cua
+GLB. Neu co `images[].uri` hoac `buffers[].uri` tro ra file ngoai, GLB se duoc
+import/export lai qua Blender de texture duoc nhung vao `converted/{id}.glb`.
+Neu log bao thieu texture, kiem tra URI trong GLB co dung dang
+`../textures/ten-file.png` so voi vi tri `source/model.glb` hay khong.
+
 ## Case 1: Animated GLB convert thanh cong nhung audit bao missing skeleton
 
 ### Trieu chung
@@ -413,6 +433,7 @@ Ky vong:
 
 ```text
 blender = ok
+unzip = ok
 usdzip = ok
 usdcat = ok
 ```
@@ -421,10 +442,12 @@ Voi OpenUSD build tu source tai `/opt/openusd`, `.env.local` nen co:
 
 ```env
 BLENDER_BIN=/snap/bin/blender
+UNZIP_BIN=/usr/bin/unzip
 USDZIP_BIN=/opt/openusd/bin/usdzip
 USDCAT_BIN=/opt/openusd/bin/usdcat
 PYTHONPATH=/opt/openusd/lib/python
 LD_LIBRARY_PATH=/opt/openusd/lib
+MODEL_PACKAGE_MAX_UNCOMPRESSED_MB=500
 ```
 
 Luu y: `usdzip` build tu OpenUSD source co the khong ho tro `--version`; dung
