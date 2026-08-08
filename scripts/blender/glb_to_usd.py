@@ -13,7 +13,7 @@ def arguments():
     values = argv[argv.index("--") + 1 :]
     if len(values) not in (2, 3):
         raise RuntimeError("Usage: blender ... -- input.glb output.usdc [target_size_meters]")
-    target_size = float(values[2]) if len(values) == 3 else 0.32
+    target_size = float(values[2]) if len(values) == 3 else 0.8
     if target_size <= 0:
         raise ValueError("target_size_meters must be greater than zero")
     return os.path.abspath(values[0]), os.path.abspath(values[1]), target_size
@@ -49,15 +49,18 @@ def activate_all_animation_tracks():
     return tracks, strips
 
 
-def normalize_model_size(target_size):
+def scene_mesh_bounds():
     bpy.context.scene.frame_set(bpy.context.scene.frame_start)
     bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
 
     points = []
     for item in bpy.context.scene.objects:
         if item.type != "MESH":
             continue
-        points.extend(item.matrix_world @ Vector(corner) for corner in item.bound_box)
+        evaluated = item.evaluated_get(depsgraph)
+        points.extend(evaluated.matrix_world @ Vector(corner) for corner in evaluated.bound_box)
+
     if not points:
         raise RuntimeError("Imported GLB does not contain mesh bounds")
 
@@ -75,6 +78,11 @@ def normalize_model_size(target_size):
             max(point.z for point in points),
         )
     )
+    return minimum, maximum
+
+
+def normalize_model_size(target_size):
+    minimum, maximum = scene_mesh_bounds()
     size = maximum - minimum
     largest = max(size.x, size.y, size.z)
     if largest <= 0:
@@ -95,10 +103,15 @@ def normalize_model_size(target_size):
     scale = target_size / largest
     center = (minimum + maximum) * 0.5
     root.scale = (scale, scale, scale)
-    root.location = (-center.x * scale, -minimum.y * scale, -center.z * scale)
+
+    # Blender imports glTF into a Z-up scene. Keep the object centered on X/Y
+    # and place its lowest point on Z=0 before USD export. The previous Y-bottom
+    # offset treated Blender as Y-up and could move the AR placement origin.
+    root.location = (-center.x * scale, -center.y * scale, -minimum.z * scale)
     bpy.context.view_layer.update()
     return {
         "sourceSize": [size.x, size.y, size.z],
+        "sourceMaxSize": largest,
         "targetSizeMeters": target_size,
         "scale": scale,
         "topLevelObjects": len(top_level),
@@ -113,6 +126,12 @@ def main():
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.import_scene.gltf(filepath=input_path)
+
+    # Author USD with explicit meter units so Quick Look interprets the same
+    # physical scale encoded in the canonical viewer GLB.
+    bpy.context.scene.unit_settings.system = "METRIC"
+    bpy.context.scene.unit_settings.scale_length = 1.0
+
     configure_frame_range()
     nla_tracks, nla_strips = activate_all_animation_tracks()
     normalization = normalize_model_size(target_size)
