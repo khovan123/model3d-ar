@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ChangeEvent, DragEvent, FormEvent, useCallback, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PublicModel } from "@/types/model";
 
 const MAX_PREVIEW_MB = 50;
@@ -35,6 +35,14 @@ function canonicalAudioMimeType(file: File) {
   return file.type.startsWith("audio/") ? file.type : "audio/mpeg";
 }
 
+const USDZ_STATUS_LABELS: Record<PublicModel["usdzStatus"], string> = {
+  pending: "Đang chờ USDZ",
+  processing: "Đang chuyển đổi",
+  ready: "USDZ sẵn sàng",
+  failed: "Chuyển đổi lỗi",
+  unavailable: "Không hỗ trợ tự động"
+};
+
 export function StudioDashboard({ initialModels }: { initialModels: PublicModel[] }) {
   const [models, setModels] = useState<PublicModel[]>(initialModels);
   const [file, setFile] = useState<File | null>(null);
@@ -63,6 +71,15 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
     if (!audioFile) return "Không bắt buộc · MP3, M4A, WAV, OGG, AAC · tối đa 20 MB";
     return `${audioFile.name} · ${formatBytes(audioFile.size)}`;
   }, [audioFile]);
+
+  useEffect(() => {
+    if (!models.some((model) => model.usdzStatus === "pending" || model.usdzStatus === "processing")) {
+      return;
+    }
+
+    const timer = window.setInterval(() => void loadModels(), 10000);
+    return () => window.clearInterval(timer);
+  }, [loadModels, models]);
 
   function selectFile(selected: File | null) {
     setMessage(null);
@@ -249,6 +266,22 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
     setMessage({ type: "success", text: "Đã xóa model." });
   }
 
+  async function retryUsdz(model: PublicModel) {
+    const response = await fetch(`/api/models/${model.id}/usdz/retry`, {
+      method: "POST",
+      headers: token ? { "x-upload-token": token } : undefined
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage({ type: "error", text: result.message ?? "Không thể chạy lại chuyển đổi USDZ." });
+      return;
+    }
+
+    const updated = result.data as PublicModel;
+    setModels((items) => items.map((item) => item.id === model.id ? updated : item));
+    setMessage({ type: "success", text: "Đã đưa model vào lại hàng đợi USDZ." });
+  }
+
   return (
     <main className="studio-shell">
       <header className="studio-header">
@@ -299,7 +332,17 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
               {models.map((model) => (
                 <article className="model-card" key={model.id}>
                   <div className="model-index">{String(models.indexOf(model) + 1).padStart(2, "0")}</div>
-                  <div className="model-info"><h3>{model.name}</h3><p>{model.description || model.originalFileName}</p><small>{formatBytes(model.size)} · {formatDate(model.createdAt)}</small></div>
+                  <div className="model-info">
+                    <h3>{model.name}</h3>
+                    <p>{model.description || model.originalFileName}</p>
+                    <small>{formatBytes(model.size)} · {formatDate(model.createdAt)}</small>
+                    <span className={`usdz-status usdz-status-${model.usdzStatus}`}>
+                      {USDZ_STATUS_LABELS[model.usdzStatus]}
+                      {model.usdzStatus === "processing" && model.usdzAttempts
+                        ? ` · lần ${model.usdzAttempts}`
+                        : ""}
+                    </span>
+                  </div>
                   <div className="qr-box">
                     {/* QR SVG is generated dynamically and should not be optimized by next/image. */}
                     {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -309,6 +352,11 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
                     <Link href={model.viewerPath} target="_blank" className="mini-button">Mở</Link>
                     <button type="button" className="mini-button" onClick={() => void copyUrl(model)}>Sao chép</button>
                     <a className="mini-button" href={`/api/models/${model.id}/qr`} download={`${model.name}.svg`}>Tải QR</a>
+                    {model.usdzStatus === "failed" && (
+                      <button type="button" className="mini-button" onClick={() => void retryUsdz(model)}>
+                        Chạy lại USDZ
+                      </button>
+                    )}
                     <button type="button" className="mini-button danger" onClick={() => void deleteItem(model)}>Xóa</button>
                   </div>
                 </article>

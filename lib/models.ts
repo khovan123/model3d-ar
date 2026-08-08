@@ -39,6 +39,10 @@ async function writeRecords(records: ModelRecord[]) {
 }
 
 export function toPublicModel(record: ModelRecord): PublicModel {
+  const usdzStatus = record.storageProvider === "supabase" && isSupabaseDatabaseConfigured()
+    ? record.usdzStatus ?? "pending"
+    : "unavailable";
+
   return {
     id: record.id,
     name: record.name,
@@ -48,7 +52,11 @@ export function toPublicModel(record: ModelRecord): PublicModel {
     size: record.size,
     createdAt: record.createdAt,
     viewerPath: `/view/${record.id}`,
-    assetPath: `/api/assets/${record.id}`
+    assetPath: `/api/assets/${record.id}`,
+    usdzStatus,
+    usdzAttempts: record.usdzAttempts,
+    usdzUpdatedAt: record.usdzUpdatedAt,
+    ...(usdzStatus === "ready" ? { usdzPath: `/api/models/${record.id}/usdz` } : {})
   };
 }
 
@@ -128,7 +136,10 @@ export async function createSupabaseModel(input: {
     size: input.size,
     createdAt: new Date().toISOString(),
     storagePath: input.storagePath,
-    storageProvider: "supabase"
+    storageProvider: "supabase",
+    usdzStatus: "pending",
+    usdzAttempts: 0,
+    usdzUpdatedAt: new Date().toISOString()
   };
 
   if (isSupabaseDatabaseConfigured()) {

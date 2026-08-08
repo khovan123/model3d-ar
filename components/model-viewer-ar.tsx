@@ -140,6 +140,7 @@ function pruneAnimationStates() {
  * Object -> WebXR transition.
  */
 export function updateActiveModelAnimations(_frameTime: number) {
+  void _frameTime;
   if (animationStates.length === 0) {
     lastAnimationFrameTime = null;
     return;

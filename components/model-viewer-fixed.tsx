@@ -33,6 +33,7 @@ type Props = {
   modelName: string;
   description: string;
   assetUrl: string;
+  usdzUrl?: string;
 };
 
 type MaterialLike = THREE.Material & {
@@ -189,7 +190,11 @@ function buildUSDZExportRoot(sourceRoot: THREE.Group) {
   return { exportRoot, ownedMaterials };
 }
 
-export function ModelViewer({ modelName, description, assetUrl }: Props) {
+function revokeBlobUrl(url: string | null) {
+  if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
+}
+
+export function ModelViewer({ modelName, description, assetUrl, usdzUrl }: Props) {
   const router = useRouter();
   const mountRef = useRef<HTMLDivElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
@@ -607,6 +612,14 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
       if (disposed) return;
 
       if (isAppleMobile()) {
+        if (usdzUrl) {
+          revokeBlobUrl(quickLookUrlRef.current);
+          quickLookUrlRef.current = usdzUrl;
+          arEngineRef.current = "quicklook";
+          setArEngine("quicklook");
+          return;
+        }
+
         arEngineRef.current = "quicklook-preparing";
         setArEngine("quicklook-preparing");
 
@@ -622,7 +635,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
           if (disposed) return;
           if (arrayBuffer.byteLength < 1024) throw new Error("USDZ export is unexpectedly empty.");
 
-          if (quickLookUrlRef.current) URL.revokeObjectURL(quickLookUrlRef.current);
+          revokeBlobUrl(quickLookUrlRef.current);
           quickLookUrlRef.current = URL.createObjectURL(
             new Blob([arrayBuffer], { type: "model/vnd.usdz+zip" })
           );
@@ -797,7 +810,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
       hitTestSourceRef.current = null;
       void sessionRef.current?.end().catch(() => undefined);
       sessionRef.current = null;
-      if (quickLookUrlRef.current) URL.revokeObjectURL(quickLookUrlRef.current);
+      revokeBlobUrl(quickLookUrlRef.current);
       quickLookUrlRef.current = null;
       controls.dispose();
       scene.traverse((item) => {
@@ -821,7 +834,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
       floorRef.current = null;
       reticleRef.current = null;
     };
-  }, [assetUrl]);
+  }, [assetUrl, usdzUrl]);
 
   const arButtonLabel = arEngine === "quicklook-preparing"
     ? "Đang chuẩn bị AR…"

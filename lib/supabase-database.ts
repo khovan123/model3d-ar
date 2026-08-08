@@ -16,6 +16,11 @@ type ModelRow = {
   mime_type: string;
   size: number;
   created_at: string;
+  usdz_status: "pending" | "processing" | "ready" | "failed";
+  usdz_storage_path: string | null;
+  usdz_error: string | null;
+  usdz_attempts: number;
+  usdz_updated_at: string;
 };
 
 export function isSupabaseDatabaseConfigured() {
@@ -55,7 +60,12 @@ function fromRow(row: ModelRow): ModelRecord {
     storageProvider: row.storage_provider ?? undefined,
     mimeType: row.mime_type,
     size: row.size,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    usdzStatus: row.usdz_status,
+    usdzStoragePath: row.usdz_storage_path ?? undefined,
+    usdzError: row.usdz_error ?? undefined,
+    usdzAttempts: row.usdz_attempts,
+    usdzUpdatedAt: row.usdz_updated_at
   };
 }
 
@@ -70,7 +80,12 @@ function toRow(record: ModelRecord): ModelRow {
     storage_provider: record.storageProvider ?? null,
     mime_type: record.mimeType,
     size: record.size,
-    created_at: record.createdAt
+    created_at: record.createdAt,
+    usdz_status: record.usdzStatus ?? "pending",
+    usdz_storage_path: record.usdzStoragePath ?? null,
+    usdz_error: record.usdzError ?? null,
+    usdz_attempts: record.usdzAttempts ?? 0,
+    usdz_updated_at: record.usdzUpdatedAt ?? record.createdAt
   };
 }
 
@@ -106,4 +121,21 @@ export async function deleteDatabaseModel(id: string) {
   });
   const rows = (await response.json()) as ModelRow[];
   return rows.length > 0;
+}
+
+export async function retryDatabaseModelUsdz(id: string) {
+  const query = new URLSearchParams({ id: `eq.${id}` });
+  const response = await databaseRequest(`/models?${query}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({
+      usdz_status: "pending",
+      usdz_storage_path: null,
+      usdz_error: null,
+      usdz_attempts: 0,
+      usdz_updated_at: new Date().toISOString()
+    })
+  });
+  const rows = (await response.json()) as ModelRow[];
+  return rows[0] ? fromRow(rows[0]) : null;
 }

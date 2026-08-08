@@ -47,6 +47,14 @@ async function handleDELETE(request: NextRequest, context: Context) {
     } catch (error) {
       logWarning("Không thể xóa audio tùy chọn của model.", error, { modelId: id });
     }
+
+    // Generated USDZ is derived data, so cleanup is best-effort like audio.
+    try {
+      const usdzPath = storedModel.usdzStoragePath ?? `usdz/${id}.usdz`;
+      if (await storageObjectExists(usdzPath)) await removeStorageObject(usdzPath);
+    } catch (error) {
+      logWarning("Không thể xóa USDZ đã tạo của model.", error, { modelId: id });
+    }
   }
 
   const deleted = await deleteModel(id);

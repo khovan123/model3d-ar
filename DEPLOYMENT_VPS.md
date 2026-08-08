@@ -8,6 +8,23 @@ Tài liệu này ghi đúng quy trình hiện tại của dự án khi chạy tr
 - Domain public đã trỏ về VPS
 - `Caddy` đang reverse proxy về `127.0.0.1:3000`
 - File `.env.local` đã có trong thư mục project
+- Supabase đã chạy migration mới nhất trong `supabase/schema.sql`
+
+## Cài công cụ chuyển đổi USDZ
+
+Animation trên iPhone Quick Look dùng worker riêng để chuyển GLB thành USDZ. VPS
+cần có Blender CLI và bộ OpenUSD chứa `usdzip`; tên package phụ thuộc phiên bản
+Ubuntu nên hãy xác nhận bằng lệnh thực tế sau khi cài:
+
+```bash
+blender --version
+usdzip --version
+usdcat --version
+```
+
+`usdcat` là tùy chọn nhưng nên có để worker kiểm tra `SkelRoot`/`SkelAnimation`.
+Không deploy code ứng dụng trước khi chạy migration, vì bản code mới đọc các cột
+`usdz_*` ngay khi lấy danh sách model.
 
 ## Cấu trúc Caddy
 
@@ -74,6 +91,12 @@ HOSTNAME=127.0.0.1 PORT=3000 pm2 start .next/standalone/server.js \
   --cwd /home/model3d_ar/model3d-ar \
   --update-env
 
+pm2 start scripts/usdz-worker.mjs \
+  --name model3d-usdz-worker \
+  --cwd /home/model3d_ar/model3d-ar \
+  --interpreter node \
+  --update-env
+
 pm2 save
 ```
 
@@ -99,6 +122,7 @@ source .env.local
 set +a
 
 pm2 restart model3d-ar --update-env
+pm2 restart model3d-usdz-worker --update-env
 pm2 save
 ```
 
@@ -114,6 +138,7 @@ source .env.local
 set +a
 
 pm2 restart model3d-ar --update-env
+pm2 restart model3d-usdz-worker --update-env
 ```
 
 ## Kiểm tra nhanh
@@ -121,9 +146,21 @@ pm2 restart model3d-ar --update-env
 ```bash
 pm2 status
 pm2 logs model3d-ar --lines 50
+pm2 logs model3d-usdz-worker --lines 100
 curl -I http://127.0.0.1:3000
 curl -I https://model3d-ar.fogewise.io.vn
 ```
+
+Trước khi bật worker liên tục, kiểm tra môi trường và chạy thử một job:
+
+```bash
+npm run worker:usdz:check
+npm run worker:usdz:once
+```
+
+Sau khi job hoàn thành, Supabase phải có file `usdz/{modelId}.usdz` và record
+phải chuyển sang `usdz_status = 'ready'`. Kiểm tra animation cuối cùng trên
+iPhone thật ở cả tab Object và AR của Quick Look.
 
 ## Nếu web lên nhưng không có CSS
 
@@ -148,3 +185,5 @@ sudo systemctl reload caddy
 - Không dùng `next start` với cấu hình `output: "standalone"`
 - Không đặt `SUPABASE_SERVICE_ROLE_KEY` ở phía client
 - `APP_URL` phải là domain public, ví dụ `https://model3d-ar.fogewise.io.vn`
+- Worker chạy từ source project, không chạy từ `.next/standalone`, vì nó cần
+  `scripts/blender/glb_to_usd.py`

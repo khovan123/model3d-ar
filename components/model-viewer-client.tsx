@@ -18,6 +18,7 @@ type Props = {
   description: string;
   assetUrl: string;
   audioUrl?: string;
+  usdzUrl?: string;
 };
 
 export function ModelViewer(props: Props) {

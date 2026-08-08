@@ -11,6 +11,7 @@ Website cho phép designer tải model 3D lên, tạo QR riêng và chia sẻ tr
 - Chế độ **Chuyển động**: dùng `DeviceOrientationEvent` để đổi góc model khi di chuyển điện thoại.
 - Upload trực tiếp từ trình duyệt lên Supabase Storage bằng signed URL; file lớn không đi qua Next.js.
 - Viewer lấy model từ private bucket bằng signed download URL.
+- Worker tự động chuyển GLB animation thành USDZ để iPhone Quick Look ưu tiên sử dụng.
 - Có thể bảo vệ thao tác upload/xóa bằng `ADMIN_UPLOAD_TOKEN`.
 - Docker image dạng Next.js standalone và volume lưu dữ liệu.
 
@@ -44,13 +45,19 @@ Dữ liệu được giữ trong Docker volume `modelspace_data`.
 | `SUPABASE_SERVICE_ROLE_KEY` | Service role key, chỉ được đặt ở server |
 | `SUPABASE_STORAGE_BUCKET` | Tên private bucket, mặc định `models` |
 | `SUPABASE_DATABASE_ENABLED` | Dùng Supabase Database cho metadata, mặc định `true` |
+| `BLENDER_BIN` | Đường dẫn Blender CLI, mặc định `blender` |
+| `USDZIP_BIN` | Đường dẫn OpenUSD `usdzip`, mặc định `usdzip` |
+| `USDCAT_BIN` | Đường dẫn `usdcat` dùng để audit skeleton, mặc định `usdcat` |
+| `USDZ_POLL_INTERVAL_MS` | Chu kỳ worker tìm job mới, mặc định 15000 ms |
+| `USDZ_MAX_ATTEMPTS` | Số lần chuyển đổi tối đa, mặc định 3 |
+| `USDZ_TARGET_SIZE_METERS` | Kích thước vật lý cạnh lớn nhất trong Quick Look, mặc định 0.32 m |
 
 ## Cấu hình Supabase Storage
 
 1. Tạo project tại Supabase.
-2. Mở **SQL Editor** và chạy toàn bộ file `supabase/schema.sql`. File này tạo bảng `models` và đồng thời tạo/cập nhật private bucket mặc định `models` để chấp nhận cả GLB lẫn audio.
+2. Mở **SQL Editor** và chạy toàn bộ file `supabase/schema.sql`. File này tạo/cập nhật bảng `models` và private bucket mặc định `models` để chấp nhận GLB, USDZ và audio.
 3. Bucket `models` hỗ trợ các MIME chính:
-   - model: `model/gltf-binary`, `application/octet-stream`;
+   - model: `model/gltf-binary`, `model/vnd.usdz+zip`, `model/vnd.usd+zip`, `application/octet-stream`;
    - audio: `audio/mpeg`, `audio/mp4`, `audio/x-m4a`, `audio/wav`, `audio/x-wav`, `audio/ogg`, `audio/aac` cùng các alias tương ứng.
 4. Nếu dùng tên bucket khác qua `SUPABASE_STORAGE_BUCKET`, đổi `'models'` trong phần cấu hình `storage.buckets` của `supabase/schema.sql` sang đúng tên bucket trước khi chạy.
 5. Trong **Project Settings → API**, lấy Project URL và service role key rồi đặt vào `.env.local`:
@@ -66,6 +73,24 @@ MAX_AUDIO_SIZE_MB=20
 Không đặt `SUPABASE_SERVICE_ROLE_KEY` trong biến có tiền tố `NEXT_PUBLIC_` và không đưa key này vào frontend.
 
 Luồng upload gồm ba bước: frontend xin signed upload URL từ Next.js, `PUT` file trực tiếp lên Supabase, sau đó gửi metadata nhỏ về Next.js để tạo model và QR. Audio tùy chọn dùng cùng private bucket với path `audio/{modelId}`.
+
+## Pipeline USDZ animation
+
+Sau khi metadata được tạo, model Supabase có trạng thái `usdz_status=pending`.
+Worker PM2 tải GLB, dùng Blender headless xuất USD animation, đóng gói bằng
+`usdzip`, audit skeleton rồi upload vào `usdz/{modelId}.usdz`. Studio tự cập
+nhật trạng thái và cho phép chạy lại job thất bại.
+
+```bash
+npm run worker:usdz:check
+npm run worker:usdz:once
+npm run worker:usdz
+```
+
+iPhone ưu tiên file USDZ đã tạo khi trạng thái là `ready`. Trong lúc chờ hoặc
+khi conversion lỗi, viewer vẫn dùng Three.js exporter hiện tại làm fallback,
+nhưng fallback không đảm bảo skeletal animation. Thiết kế và quy trình chi tiết
+nằm trong `docs/USDZ_ANIMATION_PIPELINE.md`.
 
 ## Chuẩn file model
 

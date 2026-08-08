@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "worker:usdz": "node scripts/usdz-worker.mjs",
+    "worker:usdz:once": "node scripts/usdz-worker.mjs --once",
+    "worker:usdz:check": "node scripts/usdz-worker.mjs --check"
   },
   "dependencies": {
     "next": "^16.0.0",

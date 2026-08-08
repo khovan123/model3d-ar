@@ -16,6 +16,7 @@ type Props = {
   description: string;
   assetUrl: string;
   audioUrl?: string;
+  usdzUrl?: string;
 };
 
 type ModelSpaceInfo = {
@@ -514,7 +515,7 @@ function installQuickLookInfoPatch() {
 install3DNameplatePatch();
 installEmbeddedQuickLookPlaquePatch();
 
-export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Props) {
+export function ModelViewer({ modelName, description, assetUrl, audioUrl, usdzUrl }: Props) {
   // Register synchronously so GLTFLoader can resolve display metadata even if
   // the child viewer starts loading immediately after mount.
   modelNamesByAssetUrl.set(assetUrl, modelName);
@@ -570,7 +571,12 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
 
   return (
     <div id={AR_OVERLAY_ROOT_ID} className={baseStyles.viewerHost}>
-      <BaseModelViewer modelName={modelName} description={description} assetUrl={assetUrl} />
+      <BaseModelViewer
+        modelName={modelName}
+        description={description}
+        assetUrl={assetUrl}
+        usdzUrl={usdzUrl}
+      />
 
       <button
         type="button"

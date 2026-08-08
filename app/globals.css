@@ -84,6 +84,12 @@ button { color: inherit; }
 .model-info h3 { margin: 0 0 5px; font-size: 18px; }
 .model-info p { margin: 0 0 8px; color: var(--muted); font-size: 13px; line-height: 1.4; max-width: 430px; }
 .model-info small { color: #8b8d92; font-size: 11px; }
+.usdz-status { display: block; width: fit-content; margin-top: 9px; border-left: 3px solid; padding: 4px 7px; background: #f1f1ef; color: #5e6064; font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0; }
+.usdz-status-pending { border-color: #b98516; background: #fff7df; color: #76550e; }
+.usdz-status-processing { border-color: #247c9c; background: #e8f6fa; color: #17576e; }
+.usdz-status-ready { border-color: #31945a; background: #eaf7ee; color: #22663f; }
+.usdz-status-failed { border-color: var(--accent); background: #fff0ed; color: #982c1a; }
+.usdz-status-unavailable { border-color: #8b8d92; }
 .qr-box { background: white; padding: 7px; border: 1px solid var(--line); }
 .qr-box img { display: block; width: 100%; height: auto; }
 .model-actions { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 7px; }

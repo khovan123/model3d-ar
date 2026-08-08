@@ -8,10 +8,49 @@ create table if not exists public.models (
   storage_provider text check (storage_provider in ('local', 'supabase')),
   mime_type text not null default 'model/gltf-binary',
   size bigint not null check (size > 0),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  usdz_status text not null default 'pending' check (usdz_status in ('pending', 'processing', 'ready', 'failed')),
+  usdz_storage_path text,
+  usdz_error text,
+  usdz_attempts integer not null default 0 check (usdz_attempts >= 0),
+  usdz_updated_at timestamptz not null default now()
 );
 
+alter table public.models add column if not exists usdz_status text not null default 'pending';
+alter table public.models add column if not exists usdz_storage_path text;
+alter table public.models add column if not exists usdz_error text;
+alter table public.models add column if not exists usdz_attempts integer not null default 0;
+alter table public.models add column if not exists usdz_updated_at timestamptz not null default now();
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'models_usdz_status_check'
+      and conrelid = 'public.models'::regclass
+  ) then
+    alter table public.models
+      add constraint models_usdz_status_check
+      check (usdz_status in ('pending', 'processing', 'ready', 'failed'));
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'models_usdz_attempts_check'
+      and conrelid = 'public.models'::regclass
+  ) then
+    alter table public.models
+      add constraint models_usdz_attempts_check
+      check (usdz_attempts >= 0);
+  end if;
+end $$;
+
 create index if not exists models_created_at_idx on public.models (created_at desc);
+create index if not exists models_usdz_queue_idx
+  on public.models (usdz_status, created_at)
+  where storage_provider = 'supabase';
 
 alter table public.models enable row level security;
 
@@ -32,6 +71,8 @@ values (
   false,
   array[
     'model/gltf-binary',
+    'model/vnd.usdz+zip',
+    'model/vnd.usd+zip',
     'application/octet-stream',
     'audio/mpeg',
     'audio/mp3',

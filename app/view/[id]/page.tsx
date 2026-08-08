@@ -40,6 +40,7 @@ export default async function ViewerPage({ params }: Props) {
       description={model.description}
       assetUrl={model.assetPath}
       audioUrl={audioUrl}
+      usdzUrl={model.usdzPath}
     />
   );
 }
