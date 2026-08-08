@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getStoredModel } from "@/lib/models";
+import { RequestError, withRequestLogging } from "@/lib/request-logger";
 import { createSignedDownload, storageObjectExists } from "@/lib/supabase-storage";
-import { createRouteTimer, logRoute, logRouteError } from "@/lib/request-logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,52 +35,41 @@ async function proxyAudio(signedUrl: string) {
 }
 
 async function handleGET(request: NextRequest, context: Context) {
-  const timer = createRouteTimer();
   const { id } = await context.params;
 
   try {
     const signedUrl = await resolveAudio(id);
     if (!signedUrl) {
-      const response = NextResponse.json({ message: "Model này chưa có âm thanh." }, { status: 404 });
-      logRoute(request, response.status, timer);
-      return response;
+      return NextResponse.json({ message: "Model này chưa có âm thanh." }, { status: 404 });
     }
 
     // USDZ authoring needs the raw bytes in the browser. Proxy them through the
     // same origin to avoid relying on the storage provider's CORS policy.
     if (request.nextUrl.searchParams.get("embed") === "1") {
-      const response = await proxyAudio(signedUrl);
-      logRoute(request, response.status, timer);
-      return response;
+      return proxyAudio(signedUrl);
     }
 
     const response = NextResponse.redirect(signedUrl, 307);
     response.headers.set("Cache-Control", "private, max-age=300");
-    logRoute(request, response.status, timer);
     return response;
   } catch (error) {
-    console.error("Read model audio failed", error);
-    const response = NextResponse.json({ message: "Không thể tải âm thanh." }, { status: 500 });
-    logRouteError(request, timer);
-    return response;
+    throw new RequestError(500, "Không thể tải âm thanh.", {
+      cause: error,
+      code: "AUDIO_READ_FAILED"
+    });
   }
 }
 
 async function handleHEAD(request: NextRequest, context: Context) {
-  const timer = createRouteTimer();
   const { id } = await context.params;
 
   try {
     const signedUrl = await resolveAudio(id);
-    const response = new NextResponse(null, { status: signedUrl ? 204 : 404 });
-    logRoute(request, response.status, timer);
-    return response;
+    return new NextResponse(null, { status: signedUrl ? 204 : 404 });
   } catch {
-    const response = new NextResponse(null, { status: 404 });
-    logRoute(request, response.status, timer);
-    return response;
+    return new NextResponse(null, { status: 404 });
   }
 }
 
-export const GET = handleGET;
-export const HEAD = handleHEAD;
+export const GET = withRequestLogging(handleGET);
+export const HEAD = withRequestLogging(handleHEAD);

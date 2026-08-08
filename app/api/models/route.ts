@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { isAuthorized } from "@/lib/http";
 import { createSupabaseModel, getStoredModel, listModels } from "@/lib/models";
+import { RequestError, withRequestLogging } from "@/lib/request-logger";
 import { storageObjectExists } from "@/lib/supabase-storage";
-import { createRouteTimer, logRoute, logRouteError } from "@/lib/request-logger";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,27 +21,14 @@ const uploadedModelSchema = metadataSchema.extend({
   storagePath: z.string().regex(/^models\/[0-9a-f-]+\.glb$/)
 });
 
-async function handleGET(request: NextRequest) {
-  const timer = createRouteTimer();
-
-  try {
-    const models = await listModels();
-    const response = NextResponse.json({ data: models });
-    logRoute(request, response.status, timer);
-    return response;
-  } catch (error) {
-    logRouteError(request, timer);
-    throw error;
-  }
+async function handleGET() {
+  const models = await listModels();
+  return NextResponse.json({ data: models });
 }
 
 async function handlePOST(request: NextRequest) {
-  const timer = createRouteTimer();
-
   if (!isAuthorized(request)) {
-    const response = NextResponse.json({ message: "Mã quản trị không hợp lệ." }, { status: 401 });
-    logRoute(request, response.status, timer);
-    return response;
+    return NextResponse.json({ message: "Mã quản trị không hợp lệ." }, { status: 401 });
   }
 
   try {
@@ -78,16 +65,14 @@ async function handlePOST(request: NextRequest) {
 
     const model = await createSupabaseModel(parsed.data);
 
-    const response = NextResponse.json({ data: model }, { status: 201 });
-    logRoute(request, response.status, timer);
-    return response;
+    return NextResponse.json({ data: model }, { status: 201 });
   } catch (error) {
-    console.error("Upload model failed", error);
-    const response = NextResponse.json({ message: "Không thể tải model lên. Vui lòng thử lại." }, { status: 500 });
-    logRoute(request, response.status, timer);
-    return response;
+    throw new RequestError(500, "Không thể tải model lên. Vui lòng thử lại.", {
+      cause: error,
+      code: "MODEL_CREATE_FAILED"
+    });
   }
 }
 
-export const GET = handleGET;
-export const POST = handlePOST;
+export const GET = withRequestLogging(handleGET);
+export const POST = withRequestLogging(handlePOST);
