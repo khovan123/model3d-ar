@@ -64,8 +64,10 @@ const DEBUG_EVENT = "modelspace:debug-log";
 const mixers = new Map<string, { mixer: AnimationMixerPrivate; lastUpdateAt: number; updates: number; lastDelta: number }>();
 const glbScenes = new Map<string, { url: string; clips: number; tracks: number; loadedAt: number }>();
 const renderers = new Map<string, { frames: number; firstFrameAt: number; lastFrameAt: number; xrPresenting: boolean }>();
+const rendererIds = new WeakMap<THREE.WebGLRenderer, string>();
 
 let sequence = 0;
+let rendererSequence = 0;
 let installed = false;
 let healthTimer = 0;
 let consoleInstalled = false;
@@ -77,14 +79,19 @@ const nativeConsole = {
   error: typeof console !== "undefined" ? console.error.bind(console) : () => undefined
 };
 
+function getRendererId(renderer: THREE.WebGLRenderer) {
+  let id = rendererIds.get(renderer);
+  if (!id) {
+    id = `renderer-${++rendererSequence}`;
+    rendererIds.set(renderer, id);
+  }
+  return id;
+}
+
 function safeValue(value: unknown, depth = 0): unknown {
   if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
-  if (value instanceof Error) {
-    return { name: value.name, message: value.message, stack: value.stack };
-  }
-  if (value instanceof THREE.Vector2 || value instanceof THREE.Vector3 || value instanceof THREE.Vector4 || value instanceof THREE.Euler) {
-    return value.toArray();
-  }
+  if (value instanceof Error) return { name: value.name, message: value.message, stack: value.stack };
+  if (value instanceof THREE.Vector2 || value instanceof THREE.Vector3 || value instanceof THREE.Vector4 || value instanceof THREE.Euler) return value.toArray();
   if (value instanceof THREE.Quaternion) return value.toArray();
   if (value instanceof THREE.Object3D) {
     return {
@@ -117,12 +124,7 @@ function getStore() {
   return debugWindow.__MODELSPACE_DEBUG__;
 }
 
-export function modelSpaceDebug(
-  category: ModelSpaceDebugCategory,
-  event: string,
-  data?: unknown,
-  level: ModelSpaceDebugLevel = "info"
-) {
+export function modelSpaceDebug(category: ModelSpaceDebugCategory, event: string, data?: unknown, level: ModelSpaceDebugLevel = "info") {
   const elapsedMs = Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - STARTED_AT);
   const entry: ModelSpaceDebugEntry = {
     id: ++sequence,
@@ -137,10 +139,7 @@ export function modelSpaceDebug(
   const store = getStore();
   store.push(entry);
   if (store.length > MAX_LOGS) store.splice(0, store.length - MAX_LOGS);
-
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent(DEBUG_EVENT, { detail: entry }));
-  }
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(DEBUG_EVENT, { detail: entry }));
 
   const method = level === "error" ? nativeConsole.error : level === "warn" ? nativeConsole.warn : level === "debug" ? nativeConsole.debug : nativeConsole.info;
   method(`[ModelSpace:${category}] ${event}`, entry.data ?? "");
@@ -157,19 +156,18 @@ export function clearModelSpaceDebugLogs() {
 }
 
 export function exportModelSpaceDebugLogs() {
-  const payload = {
+  return JSON.stringify({
     generatedAt: new Date().toISOString(),
     userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "server",
     url: typeof location !== "undefined" ? location.href : "server",
     snapshot: createRuntimeSnapshot(),
     logs: getModelSpaceDebugLogs()
-  };
-  return JSON.stringify(payload, null, 2);
+  }, null, 2);
 }
 
 function describeTrack(track: THREE.KeyframeTrack) {
   let binding: unknown = null;
-  try { binding = THREE.PropertyBinding.parseTrackName(track.name); } catch { /* invalid track is logged by name */ }
+  try { binding = THREE.PropertyBinding.parseTrackName(track.name); } catch { /* keep raw name */ }
   return {
     name: track.name,
     type: track.ValueTypeName,
@@ -231,7 +229,7 @@ function createRuntimeSnapshot() {
       })) ?? []
     })),
     glbScenes: Array.from(glbScenes.entries()).map(([uuid, state]) => ({ uuid, ...state })),
-    renderers: Array.from(renderers.entries()).map(([uuid, state]) => ({ uuid, ...state })),
+    renderers: Array.from(renderers.entries()).map(([id, state]) => ({ id, ...state })),
     visibility: typeof document !== "undefined" ? document.visibilityState : "unknown"
   };
 }
@@ -239,7 +237,6 @@ function createRuntimeSnapshot() {
 function installConsoleCapture() {
   if (consoleInstalled || typeof console === "undefined") return;
   consoleInstalled = true;
-
   const install = (level: ModelSpaceDebugLevel) => {
     const original = nativeConsole[level];
     console[level] = (...args: unknown[]) => {
@@ -263,7 +260,6 @@ function installConsoleCapture() {
       window.dispatchEvent(new CustomEvent(DEBUG_EVENT, { detail: entry }));
     };
   };
-
   install("debug");
   install("info");
   install("warn");
@@ -292,30 +288,17 @@ function installGlobalErrorCapture() {
     }, "error");
   }, true);
 
-  window.addEventListener("unhandledrejection", (event) => {
-    modelSpaceDebug("GLOBAL", "unhandled-rejection", { reason: event.reason }, "error");
-  });
-
-  document.addEventListener("visibilitychange", () => {
-    modelSpaceDebug("GLOBAL", "visibility-change", { state: document.visibilityState }, "debug");
-  });
-
+  window.addEventListener("unhandledrejection", (event) => modelSpaceDebug("GLOBAL", "unhandled-rejection", { reason: event.reason }, "error"));
+  document.addEventListener("visibilitychange", () => modelSpaceDebug("GLOBAL", "visibility-change", { state: document.visibilityState }, "debug"));
   document.addEventListener("pointerup", (event) => {
     modelSpaceDebug("INTERACTION", "pointer-up", {
       x: event.clientX,
       y: event.clientY,
       pointerType: event.pointerType,
-      target: event.target instanceof Element ? `${event.target.tagName}.${event.target.className}` : String(event.target)
+      target: event.target instanceof Element ? `${event.target.tagName}.${String(event.target.className)}` : String(event.target)
     }, "debug");
   }, true);
-
-  document.addEventListener("touchend", (event) => {
-    modelSpaceDebug("INTERACTION", "touch-end", {
-      touches: event.touches.length,
-      changedTouches: event.changedTouches.length
-    }, "debug");
-  }, true);
-
+  document.addEventListener("touchend", (event) => modelSpaceDebug("INTERACTION", "touch-end", { touches: event.touches.length, changedTouches: event.changedTouches.length }, "debug"), true);
   document.addEventListener("play", (event) => {
     const media = event.target;
     if (media instanceof HTMLMediaElement) modelSpaceDebug("AUDIO", "play", { src: media.currentSrc || media.src, currentTime: media.currentTime });
@@ -357,7 +340,6 @@ function installGLTFCapture() {
   const prototype = GLTFLoader.prototype as GLTFLoader & { __modelSpaceDebugPatch?: boolean };
   if (prototype.__modelSpaceDebugPatch) return;
   prototype.__modelSpaceDebugPatch = true;
-
   const originalLoad = GLTFLoader.prototype.load;
   type Args = Parameters<GLTFLoader["load"]>;
   type Loaded = Parameters<NonNullable<Args[1]>>[0];
@@ -366,7 +348,6 @@ function installGLTFCapture() {
     const requestUrl = String(url);
     const started = performance.now();
     modelSpaceDebug("GLB", "load-start", { url: requestUrl });
-
     const wrappedLoad = (gltf: Loaded) => {
       const totalTracks = gltf.animations.reduce((sum, clip) => sum + clip.tracks.length, 0);
       glbScenes.set(gltf.scene.uuid, { url: requestUrl, clips: gltf.animations.length, tracks: totalTracks, loadedAt: performance.now() });
@@ -379,52 +360,43 @@ function installGLTFCapture() {
       });
       onLoad(gltf);
     };
-
     const wrappedError = (error: unknown) => {
       modelSpaceDebug("GLB", "load-failed", { url: requestUrl, durationMs: Math.round(performance.now() - started), error }, "error");
       onError?.(error);
     };
-
     return originalLoad.call(this, url, wrappedLoad, onProgress, wrappedError);
   };
 }
 
 function installAnimationCapture() {
-  const mixerPrototype = THREE.AnimationMixer.prototype as THREE.AnimationMixer & { __modelSpaceDebugPatch?: boolean };
-  if (!mixerPrototype.__modelSpaceDebugPatch) {
-    mixerPrototype.__modelSpaceDebugPatch = true;
-    const originalClipAction = THREE.AnimationMixer.prototype.clipAction;
-    const originalUpdate = THREE.AnimationMixer.prototype.update;
+  const prototype = THREE.AnimationMixer.prototype as THREE.AnimationMixer & { __modelSpaceDebugPatch?: boolean };
+  if (prototype.__modelSpaceDebugPatch) return;
+  prototype.__modelSpaceDebugPatch = true;
+  const originalUpdate = THREE.AnimationMixer.prototype.update;
 
-    THREE.AnimationMixer.prototype.clipAction = function (...args: Parameters<THREE.AnimationMixer["clipAction"]>) {
-      const action = originalClipAction.apply(this, args);
-      const clip = typeof args[0] === "string" ? THREE.AnimationClip.findByName(this.getRoot(), args[0]) : args[0];
-      modelSpaceDebug("ANIMATION", "clip-action", {
-        mixerRoot: this.getRoot(),
-        clip: clip instanceof THREE.AnimationClip ? describeClip(clip) : String(args[0])
+  THREE.AnimationMixer.prototype.update = function (deltaTime: number) {
+    const root = this.getRoot();
+    const id = "uuid" in root && typeof root.uuid === "string" ? root.uuid : `animation-group-${String(root)}`;
+    let state = mixers.get(id);
+    if (!state) {
+      state = { mixer: this as AnimationMixerPrivate, lastUpdateAt: performance.now(), updates: 0, lastDelta: 0 };
+      mixers.set(id, state);
+      modelSpaceDebug("ANIMATION", "mixer-registered", {
+        root: safeValue(root),
+        mixerTime: this.time,
+        actions: (this as AnimationMixerPrivate)._actions?.map((action) => action.getClip?.().name) ?? []
       });
-      return action;
-    };
-
-    THREE.AnimationMixer.prototype.update = function (deltaTime: number) {
-      const id = this.getRoot().uuid;
-      let state = mixers.get(id);
-      if (!state) {
-        state = { mixer: this as AnimationMixerPrivate, lastUpdateAt: performance.now(), updates: 0, lastDelta: 0 };
-        mixers.set(id, state);
-        modelSpaceDebug("ANIMATION", "mixer-registered", { root: this.getRoot(), mixerTime: this.time });
-      }
-      state.lastUpdateAt = performance.now();
-      state.updates += 1;
-      state.lastDelta = deltaTime;
-      try {
-        return originalUpdate.call(this, deltaTime);
-      } catch (error) {
-        modelSpaceDebug("ANIMATION", "mixer-update-failed", { root: this.getRoot(), deltaTime, error }, "error");
-        throw error;
-      }
-    };
-  }
+    }
+    state.lastUpdateAt = performance.now();
+    state.updates += 1;
+    state.lastDelta = deltaTime;
+    try {
+      return originalUpdate.call(this, deltaTime);
+    } catch (error) {
+      modelSpaceDebug("ANIMATION", "mixer-update-failed", { root: safeValue(root), deltaTime, error }, "error");
+      throw error;
+    }
+  };
 }
 
 function installRenderCapture() {
@@ -434,13 +406,14 @@ function installRenderCapture() {
   const originalRender = THREE.WebGLRenderer.prototype.render;
 
   THREE.WebGLRenderer.prototype.render = function (scene: THREE.Object3D, camera: THREE.Camera) {
-    let state = renderers.get(this.uuid);
+    const rendererId = getRendererId(this);
+    let state = renderers.get(rendererId);
     const now = performance.now();
     if (!state) {
       state = { frames: 0, firstFrameAt: now, lastFrameAt: now, xrPresenting: this.xr.isPresenting };
-      renderers.set(this.uuid, state);
+      renderers.set(rendererId, state);
       modelSpaceDebug("RENDER", "renderer-first-frame", {
-        renderer: this.uuid,
+        renderer: rendererId,
         xrPresenting: this.xr.isPresenting,
         sceneChildren: scene.children.length,
         camera: camera.type
@@ -450,12 +423,12 @@ function installRenderCapture() {
     state.lastFrameAt = now;
     if (state.xrPresenting !== this.xr.isPresenting) {
       state.xrPresenting = this.xr.isPresenting;
-      modelSpaceDebug("RENDER", "xr-render-state", { renderer: this.uuid, xrPresenting: this.xr.isPresenting });
+      modelSpaceDebug("RENDER", "xr-render-state", { renderer: rendererId, xrPresenting: this.xr.isPresenting });
     }
     try {
       return originalRender.call(this, scene, camera);
     } catch (error) {
-      modelSpaceDebug("RENDER", "render-failed", { renderer: this.uuid, error }, "error");
+      modelSpaceDebug("RENDER", "render-failed", { renderer: rendererId, error }, "error");
       throw error;
     }
   };
@@ -472,11 +445,7 @@ function installUSDZCapture() {
     modelSpaceDebug("USDZ", "export-start", { scene: inspectScene(scene), options, root: scene });
     try {
       const result = await originalParseAsync.call(this, scene, options);
-      modelSpaceDebug("USDZ", "export-success", {
-        durationMs: Math.round(performance.now() - started),
-        bytes: result.byteLength,
-        scene: inspectScene(scene)
-      });
+      modelSpaceDebug("USDZ", "export-success", { durationMs: Math.round(performance.now() - started), bytes: result.byteLength, scene: inspectScene(scene) });
       return result;
     } catch (error) {
       modelSpaceDebug("USDZ", "export-failed", { durationMs: Math.round(performance.now() - started), error }, "error");
@@ -491,7 +460,6 @@ function installWebXRCapture() {
     modelSpaceDebug("WEBXR", "api-unavailable", { userAgent: navigator.userAgent }, "warn");
     return;
   }
-
   const xrObject = xr as XRSystemLike & { __modelSpaceDebugPatch?: boolean };
   if (xrObject.__modelSpaceDebugPatch) return;
   xrObject.__modelSpaceDebugPatch = true;
@@ -508,7 +476,6 @@ function installWebXRCapture() {
         visibilityState: session.visibilityState,
         hasHitTest: typeof session.requestHitTestSource === "function"
       });
-
       session.addEventListener("end", () => modelSpaceDebug("WEBXR", "session-ended", { mode }));
       session.addEventListener("visibilitychange", () => modelSpaceDebug("WEBXR", "session-visibility", { state: session.visibilityState }, "debug"));
 
@@ -541,7 +508,6 @@ function installWebXRCapture() {
           }
         };
       }
-
       return rawSession;
     } catch (error) {
       modelSpaceDebug("WEBXR", "request-session-failed", { mode, options, error }, "error");
@@ -573,7 +539,6 @@ function installHealthChecks() {
         }, "warn");
       }
     }
-
     for (const [id, state] of renderers) {
       if (state.frames > 0 && now - state.lastFrameAt > 2500 && document.visibilityState === "visible") {
         modelSpaceDebug("RENDER", "render-loop-stalled", { renderer: id, silentForMs: Math.round(now - state.lastFrameAt), frames: state.frames }, "warn");
@@ -582,25 +547,32 @@ function installHealthChecks() {
   }, 2500);
 }
 
+function installSafely(name: string, installer: () => void) {
+  try {
+    installer();
+  } catch (error) {
+    modelSpaceDebug("BOOT", "debug-hook-install-failed", { name, error }, "warn");
+  }
+}
+
 export function installModelSpaceDebugging() {
   if (installed || typeof window === "undefined") return;
   installed = true;
-
   const debugWindow = window as DebugWindow;
   debugWindow.__MODELSPACE_DEBUG__ = getStore();
   debugWindow.__MODELSPACE_DEBUG_EXPORT__ = exportModelSpaceDebugLogs;
   debugWindow.__MODELSPACE_DEBUG_CLEAR__ = clearModelSpaceDebugLogs;
   debugWindow.__MODELSPACE_DEBUG_SNAPSHOT__ = createRuntimeSnapshot;
 
-  installConsoleCapture();
-  installGlobalErrorCapture();
-  installFetchCapture();
-  installGLTFCapture();
-  installAnimationCapture();
-  installRenderCapture();
-  installUSDZCapture();
-  installWebXRCapture();
-  installHealthChecks();
+  installSafely("console", installConsoleCapture);
+  installSafely("global-errors", installGlobalErrorCapture);
+  installSafely("fetch", installFetchCapture);
+  installSafely("gltf", installGLTFCapture);
+  installSafely("animation", installAnimationCapture);
+  installSafely("render", installRenderCapture);
+  installSafely("usdz", installUSDZCapture);
+  installSafely("webxr", installWebXRCapture);
+  installSafely("health", installHealthChecks);
 
   modelSpaceDebug("BOOT", "debugger-installed", {
     url: location.href,
@@ -610,7 +582,6 @@ export function installModelSpaceDebugging() {
     language: navigator.language,
     devicePixelRatio: window.devicePixelRatio,
     viewport: [window.innerWidth, window.innerHeight],
-    webgl: true,
     webxr: Boolean((navigator as Navigator & { xr?: unknown }).xr)
   });
 }
