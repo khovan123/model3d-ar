@@ -38,7 +38,8 @@ Dữ liệu được giữ trong Docker volume `modelspace_data`.
 |---|---|
 | `APP_URL` | Domain công khai được ghi vào QR, ví dụ `https://3d.example.com` |
 | `ADMIN_UPLOAD_TOKEN` | Mã tùy chọn để bảo vệ upload và xóa |
-| `MAX_MODEL_SIZE_MB` | Kích thước file tối đa, mặc định 50 MB |
+| `MAX_MODEL_SIZE_MB` | Kích thước file model tối đa, mặc định 50 MB |
+| `MAX_AUDIO_SIZE_MB` | Kích thước file audio tối đa, mặc định 20 MB |
 | `SUPABASE_URL` | Project URL, ví dụ `https://abc.supabase.co` |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service role key, chỉ được đặt ở server |
 | `SUPABASE_STORAGE_BUCKET` | Tên private bucket, mặc định `models` |
@@ -46,21 +47,25 @@ Dữ liệu được giữ trong Docker volume `modelspace_data`.
 
 ## Cấu hình Supabase Storage
 
-1. Tạo project tại Supabase, mở **Storage** và tạo bucket tên `models`.
-2. Để bucket ở chế độ private. Đặt giới hạn file lớn hơn `MAX_MODEL_SIZE_MB` và cho phép MIME `model/gltf-binary`, `application/octet-stream` nếu dùng giới hạn MIME.
-3. Mở **SQL Editor** và chạy toàn bộ file `supabase/schema.sql` để tạo bảng `models`.
-4. Trong **Project Settings → API**, lấy Project URL và service role key rồi đặt vào `.env.local`:
+1. Tạo project tại Supabase.
+2. Mở **SQL Editor** và chạy toàn bộ file `supabase/schema.sql`. File này tạo bảng `models` và đồng thời tạo/cập nhật private bucket mặc định `models` để chấp nhận cả GLB lẫn audio.
+3. Bucket `models` hỗ trợ các MIME chính:
+   - model: `model/gltf-binary`, `application/octet-stream`;
+   - audio: `audio/mpeg`, `audio/mp4`, `audio/x-m4a`, `audio/wav`, `audio/x-wav`, `audio/ogg`, `audio/aac` cùng các alias tương ứng.
+4. Nếu dùng tên bucket khác qua `SUPABASE_STORAGE_BUCKET`, đổi `'models'` trong phần cấu hình `storage.buckets` của `supabase/schema.sql` sang đúng tên bucket trước khi chạy.
+5. Trong **Project Settings → API**, lấy Project URL và service role key rồi đặt vào `.env.local`:
 
 ```env
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 SUPABASE_STORAGE_BUCKET=models
 SUPABASE_DATABASE_ENABLED=true
+MAX_AUDIO_SIZE_MB=20
 ```
 
 Không đặt `SUPABASE_SERVICE_ROLE_KEY` trong biến có tiền tố `NEXT_PUBLIC_` và không đưa key này vào frontend.
 
-Luồng upload gồm ba bước: frontend xin signed upload URL từ Next.js, `PUT` file trực tiếp lên Supabase, sau đó gửi metadata nhỏ về Next.js để tạo model và QR.
+Luồng upload gồm ba bước: frontend xin signed upload URL từ Next.js, `PUT` file trực tiếp lên Supabase, sau đó gửi metadata nhỏ về Next.js để tạo model và QR. Audio tùy chọn dùng cùng private bucket với path `audio/{modelId}`.
 
 ## Chuẩn file model
 
