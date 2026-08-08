@@ -1,19 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { USDZExporter } from "three/addons/exporters/USDZExporter.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import * as WebGLTextureUtils from "three/addons/utils/WebGLTextureUtils.js";
-import { ModelViewer as BaseModelViewer } from "./model-viewer-fixed";
-import styles from "./model-viewer.module.css";
-
-type Props = {
-  modelName: string;
-  description: string;
-  assetUrl: string;
-  audioUrl?: string;
-};
 
 type TextureSlot =
   | "map"
@@ -25,6 +15,12 @@ type TextureSlot =
   | "alphaMap"
   | "clearcoatMap"
   | "clearcoatRoughnessMap";
+
+type AnimationPatchState = {
+  mixer: THREE.AnimationMixer;
+  root: THREE.Object3D;
+  clips: THREE.AnimationClip[];
+};
 
 const TEXTURE_SLOTS: TextureSlot[] = [
   "map",
@@ -38,12 +34,23 @@ const TEXTURE_SLOTS: TextureSlot[] = [
   "clearcoatRoughnessMap"
 ];
 
-const activeMixers = new Set<THREE.AnimationMixer>();
-let activeAnimationClip: THREE.AnimationClip | null = null;
-let activeModelScene: THREE.Object3D | null = null;
-let activeModelAnchorLocal = new THREE.Vector3(0, 1.08, 0);
-let activeRenderer: THREE.WebGLRenderer | null = null;
-let activeRenderCamera: THREE.Camera | null = null;
+let activeAnimationState: AnimationPatchState | null = null;
+let activeAnimationClips: THREE.AnimationClip[] = [];
+
+function animationTrackKey(track: THREE.KeyframeTrack) {
+  try {
+    const binding = THREE.PropertyBinding.parseTrackName(track.name);
+    return [
+      binding.nodeName ?? "",
+      binding.objectName ?? "",
+      String(binding.objectIndex ?? ""),
+      binding.propertyName ?? "",
+      String(binding.propertyIndex ?? "")
+    ].join("|");
+  } catch {
+    return track.name;
+  }
+}
 
 function clipPriority(clip: THREE.AnimationClip, index: number) {
   const name = clip.name.trim().toLowerCase();
@@ -54,10 +61,11 @@ function clipPriority(clip: THREE.AnimationClip, index: number) {
   else if (/(^|[\s_.-])(take|action)([\s_.-]|$)/.test(name)) score = 75;
 
   if (clip.duration > 0) score += 10;
+  score += Math.min(clip.tracks.length, 50) * 0.05;
   return score - index * 0.001;
 }
 
-function chooseDefaultClip(clips: THREE.AnimationClip[]) {
+function choosePrimaryClip(clips: THREE.AnimationClip[]) {
   if (clips.length === 0) return null;
 
   let best = clips[0];
@@ -72,56 +80,105 @@ function chooseDefaultClip(clips: THREE.AnimationClip[]) {
   return best;
 }
 
-function stopActiveMixers() {
-  activeMixers.forEach((mixer) => {
-    mixer.stopAllAction();
-    mixer.uncacheRoot(mixer.getRoot());
+/**
+ * GLB exporters do not always store one logical animation as one clip. Blender,
+ * Maya and conversion pipelines can emit one clip per animated object/bone.
+ * Playing only a "main" clip therefore makes otherwise animated models appear
+ * static. We keep the preferred clip, then add every clip whose target channels
+ * do not conflict with channels already selected. Distinct part clips run in
+ * parallel; alternate actions that animate the same property are not blended
+ * on top of each other.
+ */
+function choosePlaybackClips(sourceClips: THREE.AnimationClip[]) {
+  const clips = sourceClips.filter((clip) => {
+    if (clip.tracks.length === 0) return false;
+    if (!(clip.duration > 0)) clip.resetDuration();
+    return Number.isFinite(clip.duration) && clip.duration > 0;
   });
-  activeMixers.clear();
-  activeAnimationClip = null;
-}
 
-function isHierarchyVisible(object: THREE.Object3D) {
-  let current: THREE.Object3D | null = object;
-  while (current) {
-    if (!current.visible) return false;
-    current = current.parent;
+  if (clips.length <= 1) return clips;
+
+  const primary = choosePrimaryClip(clips) ?? clips[0];
+  const selected: THREE.AnimationClip[] = [primary];
+  const occupiedChannels = new Set(primary.tracks.map(animationTrackKey));
+
+  for (const clip of clips) {
+    if (clip === primary) continue;
+    const keys = clip.tracks.map(animationTrackKey);
+    const conflicts = keys.some((key) => occupiedChannels.has(key));
+    if (conflicts) continue;
+
+    selected.push(clip);
+    keys.forEach((key) => occupiedChannels.add(key));
   }
-  return true;
+
+  // Preserve file order for deterministic playback/export while keeping only
+  // the compatible set selected above.
+  const selectedSet = new Set(selected);
+  return clips.filter((clip) => selectedSet.has(clip));
 }
 
-function getInteractionCamera() {
-  if (!activeRenderer || !activeRenderCamera) return null;
-  if (!activeRenderer.xr.isPresenting) return activeRenderCamera;
-
-  const xrCamera = activeRenderer.xr.getCamera();
-  if (xrCamera instanceof THREE.ArrayCamera && xrCamera.cameras.length > 0) {
-    return xrCamera.cameras[0];
+function stopActiveAnimation() {
+  const state = activeAnimationState;
+  if (state) {
+    state.mixer.stopAllAction();
+    state.mixer.uncacheRoot(state.root);
   }
-  return xrCamera;
+  activeAnimationState = null;
+  activeAnimationClips = [];
 }
 
-function installRenderTracking() {
-  const prototype = THREE.WebGLRenderer.prototype as THREE.WebGLRenderer & {
-    __modelSpaceRenderTrackingPatch?: boolean;
-  };
-  if (prototype.__modelSpaceRenderTrackingPatch) return;
-  prototype.__modelSpaceRenderTrackingPatch = true;
+function startAnimationSet(root: THREE.Object3D, sourceClips: THREE.AnimationClip[]) {
+  stopActiveAnimation();
 
-  const originalRender = THREE.WebGLRenderer.prototype.render;
-  THREE.WebGLRenderer.prototype.render = function (scene: THREE.Object3D, camera: THREE.Camera) {
-    activeRenderer = this;
-    activeRenderCamera = camera;
-    return originalRender.call(this, scene, camera);
+  const clips = choosePlaybackClips(sourceClips);
+  if (clips.length === 0) {
+    root.userData.modelSpaceAnimation = {
+      animated: false,
+      clipCount: sourceClips.length,
+      playingClipCount: 0
+    };
+    console.info("[ModelSpace] Static GLB: no playable embedded animation clips.");
+    return;
+  }
+
+  const mixer = new THREE.AnimationMixer(root);
+  for (const clip of clips) {
+    const action = mixer.clipAction(clip);
+    action.reset();
+    action.enabled = true;
+    action.setEffectiveWeight(1);
+    action.setEffectiveTimeScale(1);
+    action.setLoop(THREE.LoopRepeat, Infinity);
+    action.play();
+  }
+  mixer.setTime(0);
+
+  activeAnimationState = { mixer, root, clips };
+  activeAnimationClips = clips;
+
+  const duration = Math.max(...clips.map((clip) => clip.duration));
+  root.userData.modelSpaceAnimation = {
+    animated: true,
+    clips: clips.map((clip) => clip.name),
+    clipCount: sourceClips.length,
+    playingClipCount: clips.length,
+    duration
   };
+
+  console.info(
+    `[ModelSpace] Playing ${clips.length}/${sourceClips.length} compatible animation clip(s): ${clips
+      .map((clip) => `"${clip.name || "Unnamed"}"`)
+      .join(", ")}.`
+  );
 }
 
 function installGLTFAnimationPlayback() {
   const loaderPrototype = GLTFLoader.prototype as GLTFLoader & {
-    __modelSpaceAnimationPatch?: boolean;
+    __modelSpaceAnimationSetPatch?: boolean;
   };
-  if (loaderPrototype.__modelSpaceAnimationPatch) return;
-  loaderPrototype.__modelSpaceAnimationPatch = true;
+  if (loaderPrototype.__modelSpaceAnimationSetPatch) return;
+  loaderPrototype.__modelSpaceAnimationSetPatch = true;
 
   const originalLoad = GLTFLoader.prototype.load;
   type LoadArguments = Parameters<GLTFLoader["load"]>;
@@ -134,48 +191,7 @@ function installGLTFAnimationPlayback() {
     onError?: LoadArguments[3]
   ) {
     const wrappedOnLoad: LoadCallback = (gltf) => {
-      stopActiveMixers();
-      activeModelScene = gltf.scene;
-
-      const bounds = new THREE.Box3().setFromObject(gltf.scene);
-      const size = bounds.getSize(new THREE.Vector3());
-      const center = bounds.getCenter(new THREE.Vector3());
-      activeModelAnchorLocal = new THREE.Vector3(
-        center.x,
-        bounds.max.y + Math.max(0.04, size.y * 0.08),
-        center.z
-      );
-
-      const clip = chooseDefaultClip(gltf.animations);
-      if (clip) {
-        activeAnimationClip = clip;
-        const mixer = new THREE.AnimationMixer(gltf.scene);
-        const action = mixer.clipAction(clip);
-        action.reset();
-        action.enabled = true;
-        action.setEffectiveWeight(1);
-        action.setEffectiveTimeScale(1);
-        action.setLoop(THREE.LoopRepeat, Infinity);
-        action.play();
-        activeMixers.add(mixer);
-
-        gltf.scene.userData.modelSpaceAnimation = {
-          animated: true,
-          clip: clip.name,
-          clipCount: gltf.animations.length,
-          duration: clip.duration
-        };
-        console.info(
-          `[ModelSpace] Playing animation "${clip.name}" (${clip.duration.toFixed(2)}s) from ${gltf.animations.length} clip(s).`
-        );
-      } else {
-        gltf.scene.userData.modelSpaceAnimation = {
-          animated: false,
-          clipCount: 0
-        };
-        console.info("[ModelSpace] Static GLB: no embedded animation clips.");
-      }
-
+      startAnimationSet(gltf.scene, gltf.animations);
       onLoad(gltf);
     };
 
@@ -183,10 +199,10 @@ function installGLTFAnimationPlayback() {
   };
 
   const rendererPrototype = THREE.WebGLRenderer.prototype as THREE.WebGLRenderer & {
-    __modelSpaceAnimationLoopPatch?: boolean;
+    __modelSpaceAnimationSetLoopPatch?: boolean;
   };
-  if (rendererPrototype.__modelSpaceAnimationLoopPatch) return;
-  rendererPrototype.__modelSpaceAnimationLoopPatch = true;
+  if (rendererPrototype.__modelSpaceAnimationSetLoopPatch) return;
+  rendererPrototype.__modelSpaceAnimationSetLoopPatch = true;
 
   const originalSetAnimationLoop = THREE.WebGLRenderer.prototype.setAnimationLoop;
   const rendererTimes = new WeakMap<THREE.WebGLRenderer, number>();
@@ -203,7 +219,9 @@ function installGLTFAnimationPlayback() {
       const previous = rendererTimes.get(this) ?? time;
       const delta = THREE.MathUtils.clamp((time - previous) / 1000, 0, 0.1);
       rendererTimes.set(this, time);
-      activeMixers.forEach((mixer) => mixer.update(delta));
+
+      const state = activeAnimationState;
+      if (state) state.mixer.update(delta);
       callback(time, frame);
     };
 
@@ -288,7 +306,7 @@ function canvasFromDrawableTexture(texture: THREE.Texture, maxTextureSize = 2048
     context.drawImage(texture.image as CanvasImageSource, 0, 0, canvas.width, canvas.height);
     return canvas;
   } catch (error) {
-    console.warn("Unable to bake texture to canvas for USDZ", error);
+    console.warn("[ModelSpace] Unable to bake texture to canvas for USDZ.", error);
     return null;
   }
 }
@@ -305,10 +323,12 @@ function bakeTexture(texture: THREE.Texture, ownedTextures: Set<THREE.Texture>) 
   return baked;
 }
 
-function installUSDZTextureCompatibility() {
-  const prototype = USDZExporter.prototype as USDZExporter & { __modelSpaceTexturePatch?: boolean };
-  if (prototype.__modelSpaceTexturePatch) return;
-  prototype.__modelSpaceTexturePatch = true;
+function installUSDZTextureAndAnimationCompatibility() {
+  const prototype = USDZExporter.prototype as USDZExporter & {
+    __modelSpaceTextureAnimationSetPatch?: boolean;
+  };
+  if (prototype.__modelSpaceTextureAnimationSetPatch) return;
+  prototype.__modelSpaceTextureAnimationSetPatch = true;
 
   const originalParseAsync = USDZExporter.prototype.parseAsync;
 
@@ -349,13 +369,19 @@ function installUSDZTextureCompatibility() {
       });
     });
 
-    const exportOptions = activeAnimationClip
+    const exportOptions = activeAnimationClips.length > 0
       ? {
           ...options,
-          animations: [activeAnimationClip],
+          animations: activeAnimationClips,
           animationFrameRate: 60
         }
       : options;
+
+    if (activeAnimationClips.length > 0) {
+      console.info(
+        `[ModelSpace] Exporting ${activeAnimationClips.length} animation clip(s) to Quick Look USDZ.`
+      );
+    }
 
     try {
       return await originalParseAsync.call(this, scene, exportOptions);
@@ -368,202 +394,5 @@ function installUSDZTextureCompatibility() {
   };
 }
 
-installRenderTracking();
 installGLTFAnimationPlayback();
-installUSDZTextureCompatibility();
-
-export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Props) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const labelRef = useRef<HTMLDivElement>(null);
-  const tooltipRef = useRef<HTMLElement>(null);
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const pointerStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
-  const [infoOpen, setInfoOpen] = useState(false);
-  const [audioAvailable, setAudioAvailable] = useState(false);
-  const [audioPlaying, setAudioPlaying] = useState(false);
-
-  const toggleAudio = useCallback(async () => {
-    const audio = audioRef.current;
-    if (!audio || !audioAvailable) return;
-
-    if (!audio.paused) {
-      audio.pause();
-      setAudioPlaying(false);
-      return;
-    }
-
-    try {
-      await audio.play();
-      setAudioPlaying(true);
-    } catch (error) {
-      console.warn("Unable to play model audio", error);
-      setAudioPlaying(false);
-    }
-  }, [audioAvailable]);
-
-  const inspectModelAt = useCallback((clientX: number, clientY: number) => {
-    if (!activeModelScene || !activeRenderer || !isHierarchyVisible(activeModelScene)) {
-      setInfoOpen(false);
-      return;
-    }
-    const camera = getInteractionCamera();
-    if (!camera) {
-      setInfoOpen(false);
-      return;
-    }
-
-    const rect = activeRenderer.domElement.getBoundingClientRect();
-    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
-      setInfoOpen(false);
-      return;
-    }
-
-    const pointer = new THREE.Vector2(
-      ((clientX - rect.left) / rect.width) * 2 - 1,
-      -((clientY - rect.top) / rect.height) * 2 + 1
-    );
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(pointer, camera);
-    const hits = raycaster.intersectObject(activeModelScene, true);
-    setInfoOpen(hits.length > 0);
-  }, []);
-
-  const onPointerDownCapture = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const target = event.target;
-    if (target instanceof Element && target.closest("button, a, input, textarea")) {
-      pointerStartRef.current = null;
-      return;
-    }
-    pointerStartRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
-  }, []);
-
-  const onPointerUpCapture = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const start = pointerStartRef.current;
-    pointerStartRef.current = null;
-    if (!start || start.pointerId !== event.pointerId) return;
-    if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) return;
-    inspectModelAt(event.clientX, event.clientY);
-  }, [inspectModelAt]);
-
-  useEffect(() => {
-    let raf = 0;
-    const worldAnchor = new THREE.Vector3();
-    const projected = new THREE.Vector3();
-
-    const updateLabel = () => {
-      const label = labelRef.current;
-      const tooltip = tooltipRef.current;
-      const model = activeModelScene;
-      const renderer = activeRenderer;
-      const camera = getInteractionCamera();
-
-      if (!label || !model || !renderer || !camera || !isHierarchyVisible(model)) {
-        if (label) label.style.opacity = "0";
-        if (tooltip) tooltip.style.opacity = "0";
-        raf = requestAnimationFrame(updateLabel);
-        return;
-      }
-
-      worldAnchor.copy(activeModelAnchorLocal);
-      model.localToWorld(worldAnchor);
-      projected.copy(worldAnchor).project(camera);
-
-      if (projected.z < -1 || projected.z > 1 || !Number.isFinite(projected.x) || !Number.isFinite(projected.y)) {
-        label.style.opacity = "0";
-        if (tooltip) tooltip.style.opacity = "0";
-        raf = requestAnimationFrame(updateLabel);
-        return;
-      }
-
-      const rect = renderer.domElement.getBoundingClientRect();
-      const x = rect.left + (projected.x * 0.5 + 0.5) * rect.width;
-      const y = rect.top + (-projected.y * 0.5 + 0.5) * rect.height;
-      label.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -100%)`;
-      label.style.opacity = "1";
-
-      if (tooltip) {
-        const margin = 12;
-        const gap = 14;
-        const tooltipWidth = tooltip.offsetWidth;
-        const tooltipHeight = tooltip.offsetHeight;
-        let tooltipX = x + gap;
-        if (tooltipX + tooltipWidth > window.innerWidth - margin) {
-          tooltipX = x - gap - tooltipWidth;
-        }
-        tooltipX = Math.max(margin, Math.min(tooltipX, window.innerWidth - tooltipWidth - margin));
-        const tooltipY = Math.max(
-          margin,
-          Math.min(y - tooltipHeight / 2, window.innerHeight - tooltipHeight - margin)
-        );
-        tooltip.style.transform = `translate3d(${tooltipX}px, ${tooltipY}px, 0)`;
-        tooltip.style.opacity = "1";
-      }
-      raf = requestAnimationFrame(updateLabel);
-    };
-
-    raf = requestAnimationFrame(updateLabel);
-    return () => {
-      cancelAnimationFrame(raf);
-      activeModelScene = null;
-      activeRenderer = null;
-      activeRenderCamera = null;
-      stopActiveMixers();
-    };
-  }, [assetUrl]);
-
-  return (
-    <div
-      ref={hostRef}
-      className={styles.viewerHost}
-      onPointerDownCapture={onPointerDownCapture}
-      onPointerUpCapture={onPointerUpCapture}
-    >
-      <BaseModelViewer modelName={modelName} description={description} assetUrl={assetUrl} />
-
-      <div
-        ref={labelRef}
-        className={styles.modelNameLabel}
-        aria-label={`Tên model: ${modelName}`}
-      >
-        <span>{modelName}</span>
-      </div>
-
-      {audioUrl && (
-        <audio
-          ref={audioRef}
-          src={audioUrl}
-          preload="metadata"
-          playsInline
-          onCanPlay={() => setAudioAvailable(true)}
-          onError={() => { setAudioAvailable(false); setAudioPlaying(false); }}
-          onEnded={() => setAudioPlaying(false)}
-        />
-      )}
-
-      {infoOpen && (
-        <section
-          ref={tooltipRef}
-          className={styles.modelInfoCard}
-          aria-label={`Mô tả ${modelName}`}
-        >
-          <button
-            type="button"
-            className={styles.infoClose}
-            onClick={() => setInfoOpen(false)}
-            aria-label="Đóng"
-          >
-            ×
-          </button>
-          <small>THÔNG TIN</small>
-          <p>{description || "Model này chưa có mô tả."}</p>
-          {audioAvailable && (
-            <button type="button" className={styles.audioButton} onClick={() => void toggleAudio()}>
-              <span aria-hidden="true">{audioPlaying ? "❚❚" : "▶"}</span>
-              {audioPlaying ? "Tạm dừng âm thanh" : "Phát âm thanh"}
-            </button>
-          )}
-        </section>
-      )}
-    </div>
-  );
-}
+installUSDZTextureAndAnimationCompatibility();
