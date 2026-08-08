@@ -2,12 +2,8 @@ import * as THREE from "three";
 import { USDZExporter } from "three/addons/exporters/USDZExporter.js";
 import {
   strFromU8,
-  strToU8,
-  unzipSync,
-  zipSync
+  unzipSync
 } from "three/addons/libs/fflate.module.js";
-
-const PLAQUE_NAME = "__modelspace_quicklook_plaque__";
 
 type USDZExporterPrototype = USDZExporter & {
   __modelSpaceQuickLookFinalizePatch?: boolean;
@@ -19,39 +15,6 @@ type MaterialSnapshot = {
   emissiveMap: THREE.Texture | null;
   emissiveIntensity: number;
 };
-
-function alignAndZip(files: Record<string, Uint8Array>) {
-  const orderedEntries = Object.entries(files).sort(([a], [b]) => {
-    if (a === "model.usda") return -1;
-    if (b === "model.usda") return 1;
-    return 0;
-  });
-
-  const aligned: Record<
-    string,
-    Uint8Array | [Uint8Array, { extra: Record<number, Uint8Array> }]
-  > = {};
-  let offset = 0;
-
-  for (const [filename, file] of orderedEntries) {
-    const headerSize = 34 + filename.length;
-    offset += headerSize;
-    const offsetMod64 = offset & 63;
-
-    if (offsetMod64 !== 4) {
-      aligned[filename] = [
-        file,
-        { extra: { 12345: new Uint8Array(64 - offsetMod64) } }
-      ];
-    } else {
-      aligned[filename] = file;
-    }
-
-    offset = file.length;
-  }
-
-  return zipSync(aligned, { level: 0 });
-}
 
 function installMaterialTextureFallback(scene: THREE.Object3D) {
   const snapshots: MaterialSnapshot[] = [];
@@ -73,10 +36,9 @@ function installMaterialTextureFallback(scene: THREE.Object3D) {
       candidate.map.colorSpace = THREE.SRGBColorSpace;
       candidate.map.needsUpdate = true;
 
-      // Quick Look has historically been more reliable with an explicit
-      // emissive texture path than with some GLB diffuse-material combinations.
-      // Keep the original PBR diffuse map and mirror it into emissive only as a
-      // low-intensity compatibility fallback on the temporary USDZ export scene.
+      // Keep the original PBR diffuse map and mirror it into emissive only on
+      // the temporary USDZ export scene. This helps Quick Look preserve painted
+      // artwork on materials that otherwise render too dark or washed out.
       if (!candidate.emissiveMap) {
         snapshots.push({
           material: candidate,
@@ -108,44 +70,6 @@ function installMaterialTextureFallback(scene: THREE.Object3D) {
   };
 }
 
-function setPlaqueInitiallyHidden(usda: string) {
-  const lines = usda.split("\n");
-  const plaqueDefinition = lines.findIndex((line) =>
-    line.includes(`def Xform "${PLAQUE_NAME}"`) ||
-    line.includes(`def "${PLAQUE_NAME}"`)
-  );
-  if (plaqueDefinition < 0) return usda;
-
-  const definitionIndent = lines[plaqueDefinition].match(/^(\s*)/)?.[1] ?? "";
-  let openBrace = -1;
-  let closeBrace = -1;
-
-  for (let index = plaqueDefinition; index < lines.length; index += 1) {
-    if (openBrace < 0 && lines[index].trim() === "{") {
-      openBrace = index;
-      continue;
-    }
-    if (openBrace >= 0 && lines[index] === `${definitionIndent}}`) {
-      closeBrace = index;
-      break;
-    }
-  }
-
-  if (openBrace < 0 || closeBrace < 0) return usda;
-
-  const alreadyAuthored = lines
-    .slice(openBrace + 1, closeBrace)
-    .some((line) => /\bvisibility\s*=/.test(line));
-  if (alreadyAuthored) return usda;
-
-  lines.splice(
-    openBrace + 1,
-    0,
-    `${definitionIndent}\ttoken visibility = "invisible"`
-  );
-  return lines.join("\n");
-}
-
 function auditTextureAssets(usda: string, files: Record<string, Uint8Array>) {
   const textureReferences = Array.from(
     usda.matchAll(/asset\s+inputs:file\s*=\s*@([^@]+)@/g),
@@ -163,23 +87,35 @@ function auditTextureAssets(usda: string, files: Record<string, Uint8Array>) {
   }
 }
 
-function finalizeUsdArchive(buffer: Uint8Array<ArrayBuffer>) {
+function auditNativeBehavior(usda: string) {
+  const typedTap = usda.includes("inherits = </TapGestureTrigger>");
+  const typedGroup = usda.includes("inherits = </GroupAction>");
+  const typedVisibility = usda.includes("inherits = </VisibilityAction>");
+  const sceneStart = usda.includes("inherits = </SceneTransitionTrigger>");
+  const show = usda.includes('token info:id = "show"');
+  const hide = usda.includes('token info:id = "hide"');
+  const hardHidden = /token\s+visibility\s*=\s*"invisible"/.test(usda);
+
+  console.info(
+    `[ModelSpace] Quick Look behavior audit: tap=${typedTap}, group=${typedGroup}, visibility=${typedVisibility}, sceneStart=${sceneStart}, show=${show}, hide=${hide}, hardHidden=${hardHidden}.`
+  );
+
+  if (!typedTap || !typedGroup || !typedVisibility || !sceneStart || !show || !hide || hardHidden) {
+    console.warn("[ModelSpace] Quick Look native behavior graph is incomplete or contains hard USD visibility.");
+  }
+}
+
+function auditUsdArchive(buffer: Uint8Array<ArrayBuffer>) {
   try {
     const files = unzipSync(buffer);
     const modelFile = files["model.usda"];
-    if (!modelFile) return buffer;
+    if (!modelFile) return;
 
-    const original = strFromU8(modelFile);
-    const next = setPlaqueInitiallyHidden(original);
-    auditTextureAssets(next, files);
-
-    if (next === original) return buffer;
-    files["model.usda"] = strToU8(next);
-    console.info("[ModelSpace] Quick Look info plaque authored hidden until model tap.");
-    return alignAndZip(files);
+    const usda = strFromU8(modelFile);
+    auditTextureAssets(usda, files);
+    auditNativeBehavior(usda);
   } catch (error) {
-    console.warn("[ModelSpace] Unable to finalize Quick Look USDZ; using previous archive.", error);
-    return buffer;
+    console.warn("[ModelSpace] Unable to audit Quick Look USDZ.", error);
   }
 }
 
@@ -193,7 +129,12 @@ export function installQuickLookUsdFinalizePatch() {
     const restoreMaterials = installMaterialTextureFallback(scene);
     try {
       const output = await originalParseAsync.call(this, scene, options);
-      return finalizeUsdArchive(output);
+      // Do not set UsdGeomImageable visibility="invisible" on the plaque.
+      // Apple's VisibilityAction uses its own runtime state and explicitly does
+      // not modify the USD visible property. Initial hiding is authored as a
+      // SceneTransitionTrigger -> VisibilityAction instead.
+      auditUsdArchive(output);
+      return output;
     } finally {
       restoreMaterials();
     }
