@@ -16,100 +16,154 @@ type Props = {
   audioUrl?: string;
 };
 
-type PointerStart = {
-  x: number;
-  y: number;
-  pointerId: number;
-};
+const modelNamesByAssetUrl = new Map<string, string>();
+const NAMEPLATE_OBJECT_NAME = "__modelspace_nameplate__";
 
-let interactionModel: THREE.Object3D | null = null;
-let interactionAnchorLocal = new THREE.Vector3(0, 1.08, 0);
-let interactionRenderer: THREE.WebGLRenderer | null = null;
-let interactionRenderCamera: THREE.Camera | null = null;
+function roundedRectPath(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number
+) {
+  const r = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + r, y);
+  context.lineTo(x + width - r, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + r);
+  context.lineTo(x + width, y + height - r);
+  context.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+  context.lineTo(x + r, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - r);
+  context.lineTo(x, y + r);
+  context.quadraticCurveTo(x, y, x + r, y);
+  context.closePath();
+}
 
-function isHierarchyVisible(object: THREE.Object3D) {
-  let current: THREE.Object3D | null = object;
-  while (current) {
-    if (!current.visible) return false;
-    current = current.parent;
+function createNameplateTexture(modelName: string) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1024;
+  canvas.height = 256;
+  const context = canvas.getContext("2d");
+  if (!context) return null;
+
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  roundedRectPath(context, 20, 24, 984, 208, 54);
+  context.fillStyle = "rgba(10, 10, 10, 0.82)";
+  context.fill();
+  context.lineWidth = 4;
+  context.strokeStyle = "rgba(255, 255, 255, 0.28)";
+  context.stroke();
+
+  let fontSize = 92;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#ffffff";
+  context.font = `800 ${fontSize}px Arial, sans-serif`;
+  while (fontSize > 42 && context.measureText(modelName).width > 880) {
+    fontSize -= 4;
+    context.font = `800 ${fontSize}px Arial, sans-serif`;
   }
-  return true;
+  context.fillText(modelName, canvas.width / 2, canvas.height / 2 + 3);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  return texture;
 }
 
-function getInteractionCamera() {
-  if (!interactionRenderer || !interactionRenderCamera) return null;
-  if (!interactionRenderer.xr.isPresenting) return interactionRenderCamera;
+function disposeNameplate(object: THREE.Object3D) {
+  if (!(object instanceof THREE.Mesh)) return;
+  object.geometry.dispose();
+  const materials = Array.isArray(object.material) ? object.material : [object.material];
+  materials.forEach((material) => {
+    if (material instanceof THREE.MeshBasicMaterial) material.map?.dispose();
+    material.dispose();
+  });
+}
 
-  const xrCamera = interactionRenderer.xr.getCamera();
-  if (xrCamera instanceof THREE.ArrayCamera && xrCamera.cameras.length > 0) {
-    return xrCamera.cameras[0];
+function add3DNameplate(gltf: { scene: THREE.Group }, modelName: string, bounds: THREE.Box3) {
+  const existing = gltf.scene.getObjectByName(NAMEPLATE_OBJECT_NAME);
+  if (existing) {
+    existing.removeFromParent();
+    disposeNameplate(existing);
   }
-  return xrCamera;
+
+  const texture = createNameplateTexture(modelName);
+  if (!texture) return;
+
+  const size = bounds.getSize(new THREE.Vector3());
+  const center = bounds.getCenter(new THREE.Vector3());
+  const largest = Math.max(size.x, size.y, size.z) || 1;
+
+  const geometry = new THREE.PlaneGeometry(largest * 0.64, largest * 0.16);
+  const material = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    alphaTest: 0.02,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    toneMapped: false
+  });
+
+  const nameplate = new THREE.Mesh(geometry, material);
+  nameplate.name = NAMEPLATE_OBJECT_NAME;
+  nameplate.position.set(center.x, bounds.max.y + largest * 0.12, center.z);
+  nameplate.renderOrder = 20;
+  nameplate.castShadow = false;
+  nameplate.receiveShadow = false;
+  nameplate.userData.modelSpaceOverlay = true;
+
+  // The plate is a real Three.js object attached to the GLB root. It therefore
+  // follows the model when the user rotates, scales, places or repositions it.
+  gltf.scene.add(nameplate);
+  gltf.scene.updateMatrixWorld(true);
 }
 
-function rememberRenderer(renderer: THREE.WebGLRenderer, camera: THREE.Camera) {
-  interactionRenderer = renderer;
-  interactionRenderCamera = camera;
-}
-
-function installInteractionTracking() {
+function install3DNameplatePatch() {
   const loaderPrototype = GLTFLoader.prototype as GLTFLoader & {
-    __modelSpacePreciseInteractionPatch?: boolean;
+    __modelSpace3DNameplatePatch?: boolean;
   };
+  if (loaderPrototype.__modelSpace3DNameplatePatch) return;
+  loaderPrototype.__modelSpace3DNameplatePatch = true;
 
-  if (!loaderPrototype.__modelSpacePreciseInteractionPatch) {
-    loaderPrototype.__modelSpacePreciseInteractionPatch = true;
-    const originalLoad = GLTFLoader.prototype.load;
-    type LoadArguments = Parameters<GLTFLoader["load"]>;
-    type LoadCallback = LoadArguments[1];
+  const originalLoad = GLTFLoader.prototype.load;
+  type LoadArguments = Parameters<GLTFLoader["load"]>;
+  type LoadCallback = LoadArguments[1];
 
-    GLTFLoader.prototype.load = function (
-      url: LoadArguments[0],
-      onLoad: LoadCallback,
-      onProgress?: LoadArguments[2],
-      onError?: LoadArguments[3]
-    ) {
-      const wrappedOnLoad: LoadCallback = (gltf) => {
-        interactionModel = gltf.scene;
+  GLTFLoader.prototype.load = function (
+    url: LoadArguments[0],
+    onLoad: LoadCallback,
+    onProgress?: LoadArguments[2],
+    onError?: LoadArguments[3]
+  ) {
+    const assetUrl = String(url);
+    const wrappedOnLoad: LoadCallback = (gltf) => {
+      // Capture bounds before the base viewer normalizes the GLB. Adding the
+      // plate after onLoad returns keeps it out of the normalization bounds.
+      const bounds = new THREE.Box3().setFromObject(gltf.scene);
+      onLoad(gltf);
 
-        const bounds = new THREE.Box3().setFromObject(gltf.scene);
-        const size = bounds.getSize(new THREE.Vector3());
-        const center = bounds.getCenter(new THREE.Vector3());
-        interactionAnchorLocal = new THREE.Vector3(
-          center.x,
-          bounds.max.y + Math.max(0.04, size.y * 0.08),
-          center.z
-        );
-
-        onLoad(gltf);
-      };
-
-      return originalLoad.call(this, url, wrappedOnLoad, onProgress, onError);
+      const modelName = modelNamesByAssetUrl.get(assetUrl);
+      if (modelName) add3DNameplate(gltf, modelName, bounds);
     };
-  }
 
-  const rendererPrototype = THREE.WebGLRenderer.prototype as THREE.WebGLRenderer & {
-    __modelSpacePreciseRenderTrackingPatch?: boolean;
+    return originalLoad.call(this, url, wrappedOnLoad, onProgress, onError);
   };
-
-  if (!rendererPrototype.__modelSpacePreciseRenderTrackingPatch) {
-    rendererPrototype.__modelSpacePreciseRenderTrackingPatch = true;
-    const originalRender = THREE.WebGLRenderer.prototype.render;
-
-    THREE.WebGLRenderer.prototype.render = function (scene: THREE.Object3D, camera: THREE.Camera) {
-      rememberRenderer(this, camera);
-      return originalRender.call(this, scene, camera);
-    };
-  }
 }
 
-installInteractionTracking();
+install3DNameplatePatch();
 
 export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Props) {
-  const hostRef = useRef<HTMLDivElement>(null);
-  const labelRef = useRef<HTMLDivElement>(null);
+  // Register synchronously so GLTFLoader can resolve the display name even if
+  // the model finishes loading before React effects run.
+  modelNamesByAssetUrl.set(assetUrl, modelName);
+
   const audioRef = useRef<HTMLAudioElement>(null);
-  const pointerStartRef = useRef<PointerStart | null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
   const [audioAvailable, setAudioAvailable] = useState(false);
   const [audioPlaying, setAudioPlaying] = useState(false);
@@ -133,148 +187,31 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
     }
   }, [audioAvailable]);
 
-  const inspectModelAt = useCallback((clientX: number, clientY: number) => {
-    const model = interactionModel;
-    const renderer = interactionRenderer;
-    const camera = getInteractionCamera();
-    if (!model || !renderer || !camera || !isHierarchyVisible(model)) return;
-
-    const rect = renderer.domElement.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return;
-    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return;
-
-    const pointer = new THREE.Vector2(
-      ((clientX - rect.left) / rect.width) * 2 - 1,
-      -((clientY - rect.top) / rect.height) * 2 + 1
-    );
-
-    const raycaster = new THREE.Raycaster();
-    raycaster.setFromCamera(pointer, camera);
-    const hits = raycaster.intersectObject(model, true);
-    if (hits.length > 0) setInfoOpen(true);
-  }, []);
-
-  useEffect(() => {
-    let animationFrame = 0;
-    let attachedCanvas: HTMLCanvasElement | null = null;
-
-    const onPointerDown = (event: PointerEvent) => {
-      pointerStartRef.current = {
-        x: event.clientX,
-        y: event.clientY,
-        pointerId: event.pointerId
-      };
-    };
-
-    const clearPointer = () => {
-      pointerStartRef.current = null;
-    };
-
-    const onPointerUp = (event: PointerEvent) => {
-      const start = pointerStartRef.current;
-      pointerStartRef.current = null;
-      if (!start || start.pointerId !== event.pointerId) return;
-
-      // A drag belongs to OrbitControls / AR manipulation, not the info action.
-      if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) return;
-      inspectModelAt(event.clientX, event.clientY);
-    };
-
-    const attachToCanvas = () => {
-      const canvas = interactionRenderer?.domElement ?? null;
-      const host = hostRef.current;
-
-      if (!canvas || !host?.contains(canvas)) {
-        animationFrame = requestAnimationFrame(attachToCanvas);
-        return;
-      }
-
-      attachedCanvas = canvas;
-      canvas.addEventListener("pointerdown", onPointerDown);
-      canvas.addEventListener("pointerup", onPointerUp);
-      canvas.addEventListener("pointercancel", clearPointer);
-    };
-
-    animationFrame = requestAnimationFrame(attachToCanvas);
-
-    return () => {
-      cancelAnimationFrame(animationFrame);
-      if (attachedCanvas) {
-        attachedCanvas.removeEventListener("pointerdown", onPointerDown);
-        attachedCanvas.removeEventListener("pointerup", onPointerUp);
-        attachedCanvas.removeEventListener("pointercancel", clearPointer);
-      }
-      pointerStartRef.current = null;
-    };
-  }, [assetUrl, inspectModelAt]);
-
-  useEffect(() => {
-    let animationFrame = 0;
-    const worldAnchor = new THREE.Vector3();
-    const projected = new THREE.Vector3();
-
-    const updateLabel = () => {
-      const label = labelRef.current;
-      const model = interactionModel;
-      const renderer = interactionRenderer;
-      const camera = getInteractionCamera();
-
-      if (!label || !model || !renderer || !camera || !isHierarchyVisible(model)) {
-        if (label) label.style.opacity = "0";
-        animationFrame = requestAnimationFrame(updateLabel);
-        return;
-      }
-
-      worldAnchor.copy(interactionAnchorLocal);
-      model.localToWorld(worldAnchor);
-      projected.copy(worldAnchor).project(camera);
-
-      if (
-        projected.z < -1 ||
-        projected.z > 1 ||
-        !Number.isFinite(projected.x) ||
-        !Number.isFinite(projected.y)
-      ) {
-        label.style.opacity = "0";
-        animationFrame = requestAnimationFrame(updateLabel);
-        return;
-      }
-
-      const rect = renderer.domElement.getBoundingClientRect();
-      const x = rect.left + (projected.x * 0.5 + 0.5) * rect.width;
-      const y = rect.top + (-projected.y * 0.5 + 0.5) * rect.height;
-      label.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -100%)`;
-      label.style.opacity = "1";
-      animationFrame = requestAnimationFrame(updateLabel);
-    };
-
-    animationFrame = requestAnimationFrame(updateLabel);
-    return () => cancelAnimationFrame(animationFrame);
-  }, [assetUrl]);
-
   useEffect(() => {
     return () => {
       const audio = audioRef.current;
       audio?.pause();
-      interactionModel = null;
-      interactionRenderer = null;
-      interactionRenderCamera = null;
+      if (modelNamesByAssetUrl.get(assetUrl) === modelName) {
+        modelNamesByAssetUrl.delete(assetUrl);
+      }
     };
-  }, []);
+  }, [assetUrl, modelName]);
 
   return (
-    <div ref={hostRef} className={styles.viewerHost}>
+    <div className={styles.viewerHost}>
       <BaseModelViewer modelName={modelName} description={description} assetUrl={assetUrl} />
 
-      <div
-        ref={labelRef}
-        className={styles.modelNameLabel}
-        style={{ pointerEvents: "none" }}
-        aria-hidden="true"
+      <button
+        type="button"
+        className={styles.infoTrigger}
+        onClick={() => setInfoOpen(true)}
+        aria-label={`Xem thông tin ${modelName}`}
+        aria-haspopup="dialog"
+        aria-expanded={infoOpen}
+        title="Thông tin model"
       >
-        <span>{modelName}</span>
-        <small>Chạm trực tiếp vào model để xem</small>
-      </div>
+        <span aria-hidden="true">!</span>
+      </button>
 
       {audioUrl && (
         <audio
@@ -299,7 +236,12 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
             aria-label="Đóng thông tin model"
             onClick={() => setInfoOpen(false)}
           />
-          <section className={styles.modelInfoCard} aria-label={`Thông tin ${modelName}`}>
+          <section
+            className={styles.modelInfoCard}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="model-info-title"
+          >
             <button
               type="button"
               className={styles.infoClose}
@@ -308,8 +250,8 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
             >
               ×
             </button>
-            <small>MODEL</small>
-            <h2>{modelName}</h2>
+            <small>THÔNG TIN MODEL 3D</small>
+            <h2 id="model-info-title">{modelName}</h2>
             <p>{description || "Model này chưa có mô tả."}</p>
             {audioAvailable && (
               <button type="button" className={styles.audioButton} onClick={() => void toggleAudio()}>
