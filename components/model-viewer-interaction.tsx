@@ -280,7 +280,6 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
   // Register synchronously so GLTFLoader can resolve the display name even if
   // the model finishes loading before React effects run.
   modelNamesByAssetUrl.set(assetUrl, modelName);
-  currentQuickLookInfo = { name: modelName, description };
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const [infoOpen, setInfoOpen] = useState(false);
@@ -307,16 +306,17 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
   }, [audioAvailable]);
 
   useEffect(() => {
+    currentQuickLookInfo = { name: modelName, description };
     installWebXrDomOverlayPatch();
     installQuickLookInfoPatch();
 
+    const audioElement = audioRef.current;
     const openQuickLookInfo = () => setInfoOpen(true);
     window.addEventListener(QUICK_LOOK_INFO_EVENT, openQuickLookInfo);
 
     return () => {
       window.removeEventListener(QUICK_LOOK_INFO_EVENT, openQuickLookInfo);
-      const audio = audioRef.current;
-      audio?.pause();
+      audioElement?.pause();
       if (modelNamesByAssetUrl.get(assetUrl) === modelName) {
         modelNamesByAssetUrl.delete(assetUrl);
       }
@@ -324,7 +324,7 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
         currentQuickLookInfo = null;
       }
     };
-  }, [assetUrl, modelName]);
+  }, [assetUrl, description, modelName]);
 
   return (
     <div id={AR_OVERLAY_ROOT_ID} className={baseStyles.viewerHost}>
