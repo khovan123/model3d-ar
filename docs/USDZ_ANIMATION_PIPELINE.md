@@ -2,9 +2,9 @@
 
 ## Muc tieu
 
-Tu dong chuyen model GLB co skeletal animation thanh USDZ tren worker backend de
-iPhone Quick Look co the su dung file da chuyen doi san. Web viewer va Android
-WebXR van dung GLB goc.
+Tu dong chuan hoa cac dinh dang 3D duoc upload thanh GLB cho web viewer, sau do
+chuyen GLB co animation thanh USDZ tren worker backend de iPhone Quick Look dung
+file da chuyen doi san.
 
 Khong sua truc tiep `node_modules/three/.../USDZExporter.js`. Exporter cua Three.js
 van duoc giu lam fallback cho model chua co USDZ hoac conversion that bai.
@@ -23,16 +23,24 @@ van duoc giu lam fallback cho model chua co USDZ hoac conversion that bai.
 ## Kien truc
 
 ```text
-Studio upload GLB
+Studio upload GLB/FBX/OBJ/DAE/BLEND/...
       |
       v
-Supabase Storage: models/{id}.glb
-Supabase DB: usdz_status=pending
+Supabase Storage: models/{id}.{ext}
+Supabase DB: asset_status=pending
       |
       v
-PM2 worker claim job
+Phase 1 - PM2 worker claim asset job
       |
-      +--> download GLB vao thu muc tam
+      +--> download source vao thu muc tam
+      +--> Blender importer theo extension
+      +--> export GLB: converted/{id}.glb
+      +--> DB: asset_status=ready
+      |
+      v
+Phase 2 - PM2 worker claim USDZ job
+      |
+      +--> download GLB da chuan hoa
       +--> inspect GLB JSON chunk
       |      +--> no animation: usdz_status=skipped, stop
       |
@@ -47,6 +55,18 @@ iPhone viewer dung /api/models/{id}/usdz
 ```
 
 ## Trang thai job
+
+Phase GLB dung `asset_status`:
+
+| Trang thai | Y nghia |
+| --- | --- |
+| `pending` | Dang cho worker import file nguon |
+| `processing` | Blender dang import va export GLB |
+| `ready` | `asset_storage_path` da co GLB cho viewer |
+| `failed` | Import/export that bai; `asset_error` co chi tiet |
+| `unsupported` | Blender tren server khong co importer phu hop |
+
+Phase USDZ dung `usdz_status`:
 
 | Trang thai | Y nghia |
 | --- | --- |
@@ -65,6 +85,12 @@ cho den khi dat `USDZ_MAX_ATTEMPTS`; lan loi cuoi cung chuyen sang `failed`. Job
 Bang `models` bo sung:
 
 ```sql
+asset_status text not null default 'pending'
+asset_storage_path text
+asset_error text
+asset_attempts integer not null default 0
+asset_updated_at timestamptz not null default now()
+
 usdz_status text not null default 'pending'
 usdz_storage_path text
 usdz_error text
@@ -76,14 +102,18 @@ Storage paths:
 
 ```text
 models/{id}.glb
+models/{id}.{source_ext}
+converted/{id}.glb
 usdz/{id}.usdz
 audio/{id}
 ```
 
 ## Worker
 
-Worker nam tai `scripts/usdz-worker.mjs` va Blender script nam tai
-`scripts/blender/glb_to_usd.py`.
+Worker nam tai `scripts/usdz-worker.mjs`. Hai Blender script la:
+
+- `scripts/blender/source_to_glb.py`: import file nguon va export GLB.
+- `scripts/blender/glb_to_usd.py`: chuyen GLB animated sang USDC de dong goi USDZ.
 
 Neu gap loi audit skeleton, static model khong chuyen sang `skipped`, hoac can
 xem lai case thuc te da debug tren VPS, doc them
@@ -92,6 +122,16 @@ xem lai case thuc te da debug tren VPS, doc them
 Truoc khi goi Blender, worker doc JSON chunk cua GLB va dem `animations[].channels`.
 Neu khong co channel, job chuyen sang `skipped`; Blender, `usdzip` va upload USDZ
 deu khong chay cho model do.
+
+Studio queue `.gltf`, `.fbx`, `.obj`, `.stl`, `.dae`, `.ply`, `.3mf`, `.blend`
+va `.usdz` vao phase GLB. `.glb` bo qua import vi da la asset viewer. `.usdz`
+upload san duoc danh dau `usdz_status=ready`, nhung van co the vao phase GLB de
+web viewer su dung.
+
+Luu y file upload hien la mot object duy nhat. `.gltf`, `.obj` va `.dae` chi
+convert duoc neu texture/buffer da embedded hoac khong can file phu. File tham
+chieu `.bin`, `.mtl` hay texture ben ngoai can mot phase package ZIP rieng; worker
+khong the tu tim cac dependency chua duoc upload.
 
 Worker chi chay mot job tai mot thoi diem. Chay mot lan:
 
@@ -116,6 +156,7 @@ Bien moi truong:
 | `USDZ_STALE_AFTER_MINUTES` | `30` | Reset job processing bi treo |
 | `USDZ_MAX_ATTEMPTS` | `3` | So lan retry toi da |
 | `USDZ_MAX_FILE_SIZE_MB` | `200` | Gioi han file USDZ dau ra |
+| `MODEL_ASSET_MAX_FILE_SIZE_MB` | `250` | Gioi han GLB sau phase 1 |
 | `USDZ_TARGET_SIZE_METERS` | `0.32` | Canh lon nhat cua model trong Quick Look |
 | `USDZ_KEEP_FAILED_WORK_DIR` | `false` | Giu thu muc tam khi can debug conversion |
 
@@ -131,7 +172,8 @@ SUPABASE_STORAGE_BUCKET
 
 1. `usdz_status=ready`: iPhone mo file USDZ da tao san.
 2. `pending/processing/failed/skipped`: iPhone dung Three.js USDZ exporter hien tai.
-3. Web viewer va Android WebXR luon dung GLB, khong phu thuoc worker.
+3. Web viewer va Android WebXR dung `asset_storage_path`; file khong phai GLB
+   phai cho phase 1 hoan thanh.
 
 Fallback dam bao worker loi khong lam viewer GLB ngung hoat dong. Tuy nhien USDZ
 fallback co the mat skeletal animation nhu hanh vi hien tai.
@@ -192,7 +234,8 @@ pm2 restart model3d-usdz-worker --update-env
 
 ## Tieu chi hoan thanh
 
-- Upload GLB tao record `pending`.
+- Upload GLB tao `asset_status=ready`; format khac tao `asset_status=pending`.
+- Format khac duoc Blender import va upload `converted/{id}.glb`.
 - Model khong co animation chuyen sang `skipped` ma khong goi Blender.
 - Model co animation duoc convert, audit, upload va chuyen sang `ready`.
 - API USDZ chi tra file khi record `ready`.

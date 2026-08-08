@@ -4,6 +4,15 @@ export type UsdzStatus =
   | "ready"
   | "failed"
   | "skipped"
+  | "unsupported"
+  | "unavailable";
+
+export type AssetStatus =
+  | "pending"
+  | "processing"
+  | "ready"
+  | "failed"
+  | "unsupported"
   | "unavailable";
 
 export type ModelRecord = {
@@ -14,6 +23,11 @@ export type ModelRecord = {
   storedFileName?: string;
   storagePath?: string;
   storageProvider?: "local" | "supabase";
+  assetStatus?: Exclude<AssetStatus, "unavailable">;
+  assetStoragePath?: string;
+  assetError?: string;
+  assetAttempts?: number;
+  assetUpdatedAt?: string;
   mimeType: string;
   size: number;
   createdAt: string;
@@ -29,12 +43,16 @@ export type PublicModel = Omit<
   | "storedFileName"
   | "storagePath"
   | "storageProvider"
+  | "assetStatus"
+  | "assetStoragePath"
+  | "assetError"
   | "usdzStatus"
   | "usdzStoragePath"
   | "usdzError"
 > & {
   viewerPath: string;
   assetPath: string;
+  assetStatus: AssetStatus;
   usdzStatus: UsdzStatus;
   usdzPath?: string;
 };

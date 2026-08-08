@@ -35,7 +35,7 @@ async function handleGET(_request: NextRequest, context: Context) {
     }
 
     const response = NextResponse.redirect(signedUrl, 307);
-    response.headers.set("Cache-Control", "private, max-age=300");
+    response.headers.set("Cache-Control", "no-store, max-age=0");
     return response;
   } catch (error) {
     throw new RequestError(500, "Không thể tạo đường dẫn tải USDZ.", {

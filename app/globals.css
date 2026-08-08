@@ -90,12 +90,15 @@ button { color: inherit; }
 .usdz-status-ready { border-color: #31945a; background: #eaf7ee; color: #22663f; }
 .usdz-status-failed { border-color: var(--accent); background: #fff0ed; color: #982c1a; }
 .usdz-status-skipped { border-color: #74777d; background: #f0f1f2; color: #4f5257; }
+.usdz-status-unsupported { border-color: #5f6368; background: #eceff1; color: #3c4043; }
 .usdz-status-unavailable { border-color: #8b8d92; }
 .qr-box { background: white; padding: 7px; border: 1px solid var(--line); }
 .qr-box img { display: block; width: 100%; height: auto; }
 .model-actions { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 7px; }
 .mini-button { border: 1px solid var(--line); background: transparent; min-height: 31px; padding: 0 10px; display: inline-flex; align-items: center; cursor: pointer; font-size: 11px; font-weight: 800; }
 .mini-button:hover { border-color: var(--ink); }
+.mini-button-disabled { cursor: not-allowed; color: #8b8d92; background: #f1f1ef; }
+.mini-button-disabled:hover { border-color: var(--line); }
 .mini-button.danger:hover { border-color: var(--accent); color: var(--accent); }
 
 .viewer-shell { position: fixed; inset: 0; background: #0d0f13; color: white; overflow: hidden; touch-action: none; }

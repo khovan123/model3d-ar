@@ -142,7 +142,7 @@ Tuy nhiên chỉ nên dùng cách này khi phiên bản Blender đủ mới và
 `npm run worker:usdz:check` báo thành công.
 
 Không deploy code ứng dụng trước khi chạy migration, vì bản code mới đọc các cột
-`usdz_*` ngay khi lấy danh sách model.
+`asset_*` và `usdz_*` ngay khi lấy danh sách model.
 
 ## Cấu trúc Caddy
 
@@ -274,9 +274,13 @@ Trước khi bật worker liên tục, kiểm tra môi trường và chạy th�
 ```bash
 npm run worker:usdz:check
 npm run worker:usdz:once
+npm run worker:usdz:once
 ```
 
-Sau khi job hoàn thành, Supabase phải có file `usdz/{modelId}.usdz` và record
+Với file không phải GLB, lần `--once` đầu chạy phase source -> GLB và tạo
+`converted/{modelId}.glb`; lần thứ hai kiểm tra animation rồi tạo USDZ hoặc đánh
+dấu `skipped`. Khi chạy PM2 liên tục, worker tự nối hai phase, không cần chạy tay
+hai lần. Với model animated, Supabase phải có `usdz/{modelId}.usdz` và record
 phải chuyển sang `usdz_status = 'ready'`. Kiểm tra animation cuối cùng trên
 iPhone thật ở cả tab Object và AR của Quick Look.
 
@@ -304,4 +308,4 @@ sudo systemctl reload caddy
 - Không đặt `SUPABASE_SERVICE_ROLE_KEY` ở phía client
 - `APP_URL` phải là domain public, ví dụ `https://model3d-ar.fogewise.io.vn`
 - Worker chạy từ source project, không chạy từ `.next/standalone`, vì nó cần
-  `scripts/blender/glb_to_usd.py`
+  `scripts/blender/source_to_glb.py` và `scripts/blender/glb_to_usd.py`

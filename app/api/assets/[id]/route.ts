@@ -18,9 +18,26 @@ async function handleGET(request: NextRequest, context: Context) {
     return NextResponse.json({ message: "Không tìm thấy model." }, { status: 404 });
   }
 
-  if (model.storageProvider === "supabase" && model.storagePath) {
+  if (model.storageProvider === "supabase") {
+    if (model.assetStatus === "pending" || model.assetStatus === "processing") {
+      return NextResponse.json(
+        { message: "Model đang được chuyển sang GLB để hiển thị." },
+        { status: 425, headers: { "Retry-After": "10" } }
+      );
+    }
+    if (model.assetStatus === "failed" || model.assetStatus === "unsupported") {
+      return NextResponse.json(
+        { message: model.assetError ?? "Định dạng model này chưa thể chuyển sang GLB." },
+        { status: 422 }
+      );
+    }
+
+    const assetStoragePath = model.assetStoragePath ?? model.storagePath;
+    if (!assetStoragePath) {
+      return NextResponse.json({ message: "Model không có file GLB hợp lệ." }, { status: 404 });
+    }
     try {
-      const url = await createSignedDownload(model.storagePath);
+      const url = await createSignedDownload(assetStoragePath);
       return NextResponse.redirect(url, {
         status: 307,
         headers: { "Cache-Control": "private, no-store" }

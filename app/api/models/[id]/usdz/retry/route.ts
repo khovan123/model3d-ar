@@ -40,6 +40,12 @@ async function handlePOST(request: NextRequest, context: Context) {
       { status: 409 }
     );
   }
+  if (model.assetStatus !== "ready") {
+    return NextResponse.json(
+      { message: "Cần chuyển model sang GLB thành công trước khi chạy lại USDZ." },
+      { status: 409 }
+    );
+  }
 
   try {
     const updated = await retryDatabaseModelUsdz(id);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { isAuthorized } from "@/lib/http";
+import { getModelExtension, isSupportedModelFile } from "@/lib/model-file-types";
 import { createSupabaseModel, getStoredModel, listModels } from "@/lib/models";
 import { RequestError, withRequestLogging } from "@/lib/request-logger";
 import { storageObjectExists } from "@/lib/supabase-storage";
@@ -18,7 +19,7 @@ const uploadedModelSchema = metadataSchema.extend({
   originalFileName: z.string().min(1).max(255),
   mimeType: z.string().default("model/gltf-binary"),
   size: z.number().int().positive(),
-  storagePath: z.string().regex(/^models\/[0-9a-f-]+\.glb$/)
+  storagePath: z.string().regex(/^models\/[0-9a-f-]+\.[a-z0-9]+$/)
 });
 
 async function handleGET() {
@@ -51,7 +52,12 @@ async function handlePOST(request: NextRequest) {
       );
     }
 
-    if (parsed.data.storagePath !== `models/${parsed.data.id}.glb`) {
+    const extension = getModelExtension(parsed.data.storagePath);
+    if (
+      !extension ||
+      !isSupportedModelFile(parsed.data.storagePath) ||
+      parsed.data.storagePath !== `models/${parsed.data.id}.${extension}`
+    ) {
       return NextResponse.json({ message: "Đường dẫn upload không hợp lệ." }, { status: 400 });
     }
 

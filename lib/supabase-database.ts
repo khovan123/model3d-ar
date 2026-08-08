@@ -16,7 +16,12 @@ type ModelRow = {
   mime_type: string;
   size: number;
   created_at: string;
-  usdz_status: "pending" | "processing" | "ready" | "failed" | "skipped";
+  asset_status: "pending" | "processing" | "ready" | "failed" | "unsupported";
+  asset_storage_path: string | null;
+  asset_error: string | null;
+  asset_attempts: number;
+  asset_updated_at: string;
+  usdz_status: "pending" | "processing" | "ready" | "failed" | "skipped" | "unsupported";
   usdz_storage_path: string | null;
   usdz_error: string | null;
   usdz_attempts: number;
@@ -61,6 +66,11 @@ function fromRow(row: ModelRow): ModelRecord {
     mimeType: row.mime_type,
     size: row.size,
     createdAt: row.created_at,
+    assetStatus: row.asset_status,
+    assetStoragePath: row.asset_storage_path ?? undefined,
+    assetError: row.asset_error ?? undefined,
+    assetAttempts: row.asset_attempts,
+    assetUpdatedAt: row.asset_updated_at,
     usdzStatus: row.usdz_status,
     usdzStoragePath: row.usdz_storage_path ?? undefined,
     usdzError: row.usdz_error ?? undefined,
@@ -81,6 +91,11 @@ function toRow(record: ModelRecord): ModelRow {
     mime_type: record.mimeType,
     size: record.size,
     created_at: record.createdAt,
+    asset_status: record.assetStatus ?? "pending",
+    asset_storage_path: record.assetStoragePath ?? null,
+    asset_error: record.assetError ?? null,
+    asset_attempts: record.assetAttempts ?? 0,
+    asset_updated_at: record.assetUpdatedAt ?? record.createdAt,
     usdz_status: record.usdzStatus ?? "pending",
     usdz_storage_path: record.usdzStoragePath ?? null,
     usdz_error: record.usdzError ?? null,
@@ -135,6 +150,37 @@ export async function retryDatabaseModelUsdz(id: string) {
       usdz_attempts: 0,
       usdz_updated_at: new Date().toISOString()
     })
+  });
+  const rows = (await response.json()) as ModelRow[];
+  return rows[0] ? fromRow(rows[0]) : null;
+}
+
+export async function retryDatabaseModelAsset(id: string) {
+  const current = await getDatabaseModel(id);
+  if (!current) return null;
+  const sourceIsReadyUsdz = current.storagePath?.toLowerCase().endsWith(".usdz")
+    && current.usdzStoragePath === current.storagePath;
+  const query = new URLSearchParams({ id: `eq.${id}` });
+  const values: Record<string, string | number | null> = {
+    asset_status: "pending",
+    asset_storage_path: null,
+    asset_error: null,
+    asset_attempts: 0,
+    asset_updated_at: new Date().toISOString()
+  };
+  if (!sourceIsReadyUsdz) {
+    Object.assign(values, {
+      usdz_status: "pending",
+      usdz_storage_path: null,
+      usdz_error: null,
+      usdz_attempts: 0,
+      usdz_updated_at: new Date().toISOString()
+    });
+  }
+  const response = await databaseRequest(`/models?${query}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify(values)
   });
   const rows = (await response.json()) as ModelRow[];
   return rows[0] ? fromRow(rows[0]) : null;

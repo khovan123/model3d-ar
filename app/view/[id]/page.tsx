@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { ModelViewer } from "@/components/model-viewer-client";
+import { ModelProcessingState } from "@/components/model-processing-state";
 import { getModel, getStoredModel, toPublicModel } from "@/lib/models";
 import { storageObjectExists } from "@/lib/supabase-storage";
 
@@ -21,6 +22,9 @@ export default async function ViewerPage({ params }: Props) {
   if (!record) notFound();
 
   const model = toPublicModel(record);
+  if (model.assetStatus !== "ready") {
+    return <ModelProcessingState status={model.assetStatus} />;
+  }
   let audioUrl: string | undefined;
 
   if (record.storageProvider === "supabase") {

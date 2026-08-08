@@ -8,6 +8,7 @@ import {
   isSupabaseDatabaseConfigured,
   listDatabaseModels
 } from "@/lib/supabase-database";
+import { canConvertToGlb, getModelExtension } from "@/lib/model-file-types";
 import type { ModelRecord, PublicModel } from "@/types/model";
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -39,9 +40,15 @@ async function writeRecords(records: ModelRecord[]) {
 }
 
 export function toPublicModel(record: ModelRecord): PublicModel {
+  const assetStatus = record.storageProvider === "supabase" && isSupabaseDatabaseConfigured()
+    ? record.assetStatus ?? "pending"
+    : "ready";
   const usdzStatus = record.storageProvider === "supabase" && isSupabaseDatabaseConfigured()
     ? record.usdzStatus ?? "pending"
     : "unavailable";
+  const usdzVersion = record.usdzUpdatedAt
+    ? encodeURIComponent(record.usdzUpdatedAt)
+    : encodeURIComponent(record.id);
 
   return {
     id: record.id,
@@ -53,10 +60,13 @@ export function toPublicModel(record: ModelRecord): PublicModel {
     createdAt: record.createdAt,
     viewerPath: `/view/${record.id}`,
     assetPath: `/api/assets/${record.id}`,
+    assetStatus,
+    assetAttempts: record.assetAttempts,
+    assetUpdatedAt: record.assetUpdatedAt,
     usdzStatus,
     usdzAttempts: record.usdzAttempts,
     usdzUpdatedAt: record.usdzUpdatedAt,
-    ...(usdzStatus === "ready" ? { usdzPath: `/api/models/${record.id}/usdz` } : {})
+    ...(usdzStatus === "ready" ? { usdzPath: `/api/models/${record.id}/usdz?v=${usdzVersion}` } : {})
   };
 }
 
@@ -127,6 +137,11 @@ export async function createSupabaseModel(input: {
   size: number;
   storagePath: string;
 }) {
+  const extension = getModelExtension(input.storagePath);
+  const isUploadedGlb = extension === "glb";
+  const isUploadedUsdz = extension === "usdz";
+  const canConvert = canConvertToGlb(input.storagePath);
+  const now = new Date().toISOString();
   const record: ModelRecord = {
     id: input.id,
     name: input.name,
@@ -134,12 +149,17 @@ export async function createSupabaseModel(input: {
     originalFileName: input.originalFileName,
     mimeType: input.mimeType || "model/gltf-binary",
     size: input.size,
-    createdAt: new Date().toISOString(),
+    createdAt: now,
     storagePath: input.storagePath,
     storageProvider: "supabase",
-    usdzStatus: "pending",
+    assetStatus: isUploadedGlb ? "ready" : canConvert ? "pending" : "unsupported",
+    assetStoragePath: isUploadedGlb ? input.storagePath : undefined,
+    assetAttempts: 0,
+    assetUpdatedAt: now,
+    usdzStatus: isUploadedUsdz ? "ready" : canConvert ? "pending" : "unsupported",
+    usdzStoragePath: isUploadedUsdz ? input.storagePath : undefined,
     usdzAttempts: 0,
-    usdzUpdatedAt: new Date().toISOString()
+    usdzUpdatedAt: now
   };
 
   if (isSupabaseDatabaseConfigured()) {

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { ChangeEvent, DragEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { canonicalModelMimeType, getModelFileType, SUPPORTED_MODEL_ACCEPT, SUPPORTED_MODEL_EXTENSIONS } from "@/lib/model-file-types";
 import type { PublicModel } from "@/types/model";
 
 const MAX_PREVIEW_MB = 50;
@@ -35,13 +36,27 @@ function canonicalAudioMimeType(file: File) {
   return file.type.startsWith("audio/") ? file.type : "audio/mpeg";
 }
 
+function displayModelExtensions() {
+  return SUPPORTED_MODEL_EXTENSIONS.map((extension) => `.${extension}`).join(", ");
+}
+
 const USDZ_STATUS_LABELS: Record<PublicModel["usdzStatus"], string> = {
   pending: "Đang chờ USDZ",
   processing: "Đang chuyển đổi",
   ready: "USDZ sẵn sàng",
   failed: "Chuyển đổi lỗi",
   skipped: "Không có animation",
+  unsupported: "USDZ không khả dụng",
   unavailable: "Không hỗ trợ tự động"
+};
+
+const ASSET_STATUS_LABELS: Record<PublicModel["assetStatus"], string> = {
+  pending: "Đang chờ tạo GLB",
+  processing: "Đang tạo GLB",
+  ready: "GLB sẵn sàng",
+  failed: "Tạo GLB lỗi",
+  unsupported: "Không hỗ trợ chuyển GLB",
+  unavailable: "GLB local"
 };
 
 export function StudioDashboard({ initialModels }: { initialModels: PublicModel[] }) {
@@ -74,7 +89,12 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
   }, [audioFile]);
 
   useEffect(() => {
-    if (!models.some((model) => model.usdzStatus === "pending" || model.usdzStatus === "processing")) {
+    if (!models.some((model) =>
+      model.assetStatus === "pending" ||
+      model.assetStatus === "processing" ||
+      model.usdzStatus === "pending" ||
+      model.usdzStatus === "processing"
+    )) {
       return;
     }
 
@@ -85,8 +105,8 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
   function selectFile(selected: File | null) {
     setMessage(null);
     if (!selected) return;
-    if (!selected.name.toLowerCase().endsWith(".glb")) {
-      setMessage({ type: "error", text: "Vui lòng chọn file .glb." });
+    if (!getModelFileType(selected.name)) {
+      setMessage({ type: "error", text: `Vui lòng chọn file 3D hợp lệ: ${displayModelExtensions()}.` });
       return;
     }
     if (selected.size > MAX_PREVIEW_MB * 1024 * 1024) {
@@ -94,7 +114,7 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
       return;
     }
     setFile(selected);
-    if (!name) setName(selected.name.replace(/\.glb$/i, "").replace(/[-_]+/g, " "));
+    if (!name) setName(selected.name.replace(/\.[^.]+$/i, "").replace(/[-_]+/g, " "));
   }
 
   function selectAudio(selected: File | null) {
@@ -184,7 +204,7 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
     const signedResponse = await fetch("/api/models/upload-url", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders },
-      body: JSON.stringify({ fileName: file.name, fileSize: file.size, mimeType: file.type })
+      body: JSON.stringify({ fileName: file.name, fileSize: file.size, mimeType: canonicalModelMimeType(file.name, file.type) })
     });
     const signedResult = await signedResponse.json().catch(() => ({}));
 
@@ -194,11 +214,12 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
       return;
     }
 
-    const upload = signedResult.data as { id: string; storagePath: string; uploadUrl: string };
+    const upload = signedResult.data as { id: string; storagePath: string; uploadUrl: string; mimeType?: string };
+    const modelMimeType = upload.mimeType || canonicalModelMimeType(file.name, file.type);
     const uploadResponse = await fetch(upload.uploadUrl, {
       method: "PUT",
       headers: {
-        "Content-Type": file.type || "model/gltf-binary",
+        "Content-Type": modelMimeType,
         "x-upsert": "false"
       },
       body: file
@@ -219,7 +240,7 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
         name,
         description,
         originalFileName: file.name,
-        mimeType: file.type || "model/gltf-binary",
+        mimeType: modelMimeType,
         size: file.size
       })
     });
@@ -283,6 +304,22 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
     setMessage({ type: "success", text: "Đã đưa model vào lại hàng đợi USDZ." });
   }
 
+  async function retryAsset(model: PublicModel) {
+    const response = await fetch(`/api/models/${model.id}/convert/retry`, {
+      method: "POST",
+      headers: token ? { "x-upload-token": token } : undefined
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setMessage({ type: "error", text: result.message ?? "Không thể chạy lại chuyển đổi GLB." });
+      return;
+    }
+
+    const updated = result.data as PublicModel;
+    setModels((items) => items.map((item) => item.id === model.id ? updated : item));
+    setMessage({ type: "success", text: "Đã đưa model vào lại hàng đợi chuyển sang GLB." });
+  }
+
   return (
     <main className="studio-shell">
       <header className="studio-header">
@@ -292,7 +329,7 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
 
       <div className="studio-grid">
         <section className="panel upload-panel">
-          <div className="section-heading"><span>01</span><div><h2>Tải model mới</h2><p>Định dạng hỗ trợ: GLB</p></div></div>
+          <div className="section-heading"><span>01</span><div><h2>Tải model mới</h2><p>Định dạng hỗ trợ: {displayModelExtensions()}</p></div></div>
           <form onSubmit={onSubmit}>
             <div
               className={`dropzone ${dragging ? "is-dragging" : ""} ${file ? "has-file" : ""}`}
@@ -304,9 +341,9 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
               tabIndex={0}
               onKeyDown={(event) => { if (event.key === "Enter") inputRef.current?.click(); }}
             >
-              <input ref={inputRef} type="file" accept=".glb,model/gltf-binary" hidden onChange={onFileChange} />
+              <input ref={inputRef} type="file" accept={SUPPORTED_MODEL_ACCEPT} hidden onChange={onFileChange} />
               <div className="upload-mark">{file ? "✓" : "+"}</div>
-              <strong>{file ? "Model đã sẵn sàng" : "Thả file GLB vào đây"}</strong>
+                <strong>{file ? "Model đã sẵn sàng" : "Thả file 3D vào đây"}</strong>
               <span>{selectedInfo ?? "hoặc bấm để chọn file · tối đa 50 MB"}</span>
             </div>
 
@@ -337,6 +374,12 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
                     <h3>{model.name}</h3>
                     <p>{model.description || model.originalFileName}</p>
                     <small>{formatBytes(model.size)} · {formatDate(model.createdAt)}</small>
+                    <span className={`usdz-status usdz-status-${model.assetStatus}`}>
+                      {ASSET_STATUS_LABELS[model.assetStatus]}
+                      {model.assetStatus === "processing" && model.assetAttempts
+                        ? ` · lần ${model.assetAttempts}`
+                        : ""}
+                    </span>
                     <span className={`usdz-status usdz-status-${model.usdzStatus}`}>
                       {USDZ_STATUS_LABELS[model.usdzStatus]}
                       {model.usdzStatus === "processing" && model.usdzAttempts
@@ -350,12 +393,21 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
                     <img src={`/api/models/${model.id}/qr`} alt={`QR mở ${model.name}`} />
                   </div>
                   <div className="model-actions">
-                    <Link href={model.viewerPath} target="_blank" className="mini-button">Mở</Link>
+                    {model.assetStatus === "ready" ? (
+                      <Link href={model.viewerPath} target="_blank" className="mini-button">Mở</Link>
+                    ) : (
+                      <span className="mini-button mini-button-disabled">Chưa thể mở</span>
+                    )}
                     <button type="button" className="mini-button" onClick={() => void copyUrl(model)}>Sao chép</button>
                     <a className="mini-button" href={`/api/models/${model.id}/qr`} download={`${model.name}.svg`}>Tải QR</a>
                     {model.usdzStatus === "failed" && (
                       <button type="button" className="mini-button" onClick={() => void retryUsdz(model)}>
                         Chạy lại USDZ
+                      </button>
+                    )}
+                    {(model.assetStatus === "failed" || model.assetStatus === "unsupported") && (
+                      <button type="button" className="mini-button" onClick={() => void retryAsset(model)}>
+                        Chạy lại GLB
                       </button>
                     )}
                     <button type="button" className="mini-button danger" onClick={() => void deleteItem(model)}>Xóa</button>

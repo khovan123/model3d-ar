@@ -51,9 +51,20 @@ async function handleDELETE(request: NextRequest, context: Context) {
     // Generated USDZ is derived data, so cleanup is best-effort like audio.
     try {
       const usdzPath = storedModel.usdzStoragePath ?? `usdz/${id}.usdz`;
-      if (await storageObjectExists(usdzPath)) await removeStorageObject(usdzPath);
+      if (usdzPath !== storedModel.storagePath && await storageObjectExists(usdzPath)) {
+        await removeStorageObject(usdzPath);
+      }
     } catch (error) {
       logWarning("Không thể xóa USDZ đã tạo của model.", error, { modelId: id });
+    }
+
+    try {
+      const assetPath = storedModel.assetStoragePath ?? `converted/${id}.glb`;
+      if (assetPath !== storedModel.storagePath && await storageObjectExists(assetPath)) {
+        await removeStorageObject(assetPath);
+      }
+    } catch (error) {
+      logWarning("Không thể xóa GLB đã chuyển đổi của model.", error, { modelId: id });
     }
   }
 

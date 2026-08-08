@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { isAuthorized } from "@/lib/http";
+import { canonicalModelMimeType, getModelExtension, SUPPORTED_MODEL_EXTENSIONS } from "@/lib/model-file-types";
 import { RequestError, withRequestLogging } from "@/lib/request-logger";
 import { createSignedUpload } from "@/lib/supabase-storage";
 
@@ -25,8 +26,12 @@ async function handlePOST(request: NextRequest) {
       return NextResponse.json({ message: "Thông tin file không hợp lệ." }, { status: 400 });
     }
 
-    if (!parsed.data.fileName.toLowerCase().endsWith(".glb")) {
-      return NextResponse.json({ message: "Hiện tại hệ thống chỉ nhận file .glb." }, { status: 415 });
+    const extension = getModelExtension(parsed.data.fileName);
+    if (!extension || !SUPPORTED_MODEL_EXTENSIONS.includes(extension)) {
+      return NextResponse.json(
+        { message: `Hệ thống hỗ trợ file 3D: ${SUPPORTED_MODEL_EXTENSIONS.map((item) => `.${item}`).join(", ")}.` },
+        { status: 415 }
+      );
     }
 
     const maxSizeMb = Number(process.env.MAX_MODEL_SIZE_MB ?? 50);
@@ -39,11 +44,11 @@ async function handlePOST(request: NextRequest) {
     }
 
     const id = randomUUID();
-    const storagePath = `models/${id}.glb`;
+    const storagePath = `models/${id}.${extension}`;
     const uploadUrl = await createSignedUpload(storagePath);
 
     return NextResponse.json({
-      data: { id, storagePath, uploadUrl, expiresIn: 7200 }
+      data: { id, storagePath, uploadUrl, mimeType: canonicalModelMimeType(parsed.data.fileName, parsed.data.mimeType), expiresIn: 7200 }
     });
   } catch (error) {
     throw new RequestError(500, "Không thể kết nối Supabase Storage. Hãy kiểm tra cấu hình server.", {
