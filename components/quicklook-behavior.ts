@@ -190,13 +190,12 @@ function alignAndZip(files: Record<string, Uint8Array>) {
     offset = file.length;
   }
 
-  const zipped = zipSync(aligned, { level: 0 });
-  return zipped.buffer.slice(zipped.byteOffset, zipped.byteOffset + zipped.byteLength) as ArrayBuffer;
+  return zipSync(aligned, { level: 0 });
 }
 
-function authorNativeBehavior(buffer: ArrayBuffer) {
+function authorNativeBehavior(buffer: Uint8Array<ArrayBuffer>) {
   try {
-    const files = unzipSync(new Uint8Array(buffer));
+    const files = unzipSync(buffer);
     const modelFile = files["model.usda"];
     if (!modelFile) return buffer;
 
