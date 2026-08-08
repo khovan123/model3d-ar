@@ -89,7 +89,7 @@ def import_source(input_path):
         return first_available_operator(
             [
                 ("wm", "threemf_import"),
-                ("import_mesh", "threemf_import"),
+                ("import_mesh", "threemf"),
                 ("import_scene", "threemf"),
             ],
             filepath=input_path,
