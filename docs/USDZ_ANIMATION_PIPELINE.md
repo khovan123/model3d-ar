@@ -112,7 +112,7 @@ audio/{id}
 
 Worker nam tai `scripts/usdz-worker.mjs`. Hai Blender script la:
 
-- `scripts/blender/source_to_glb.py`: import file nguon, normalize scale va export GLB canonical.
+- `scripts/blender/source_to_glb.py`: import file nguon va export GLB.
 - `scripts/blender/glb_to_usd.py`: chuyen GLB animated sang USDC de dong goi USDZ.
 
 Neu gap loi audit skeleton, static model khong chuyen sang `skipped`, hoac can
@@ -123,17 +123,16 @@ Truoc khi goi Blender, worker doc JSON chunk cua GLB va dem `animations[].channe
 Neu khong co channel, job chuyen sang `skipped`; Blender, `usdzip` va upload USDZ
 deu khong chay cho model do.
 
-Studio queue `.glb`, `.gltf`, `.fbx`, `.obj`, `.stl`, `.dae`, `.ply`, `.3mf`,
-`.blend`, `.usdz` va `.zip` vao phase GLB. Worker dua tat ca format co the
-convert qua cung mot buoc Blender de tao `converted/{id}.glb` canonical, nham
-giu cung scene scale cho web viewer va USDZ. `.usdz` upload san duoc danh dau
-`usdz_status=ready`, nhung van co the vao phase GLB de web viewer su dung.
+Studio queue `.gltf`, `.fbx`, `.obj`, `.stl`, `.dae`, `.ply`, `.3mf`, `.blend`,
+`.usdz` va `.zip` vao phase GLB. `.glb` bo qua import vi da la asset viewer. `.usdz`
+upload san duoc danh dau `usdz_status=ready`, nhung van co the vao phase GLB de
+web viewer su dung.
 
 Voi model co file phu, nen upload `.zip` giu nguyen cau truc thu muc. Worker giai
 nen, tu chon model chinh va de Blender resolve `.bin`, `.mtl` va texture theo
-duong dan tuong doi. Ke ca khi ZIP chua san mot `.glb` self-contained, worker
-van import lai va export ra `converted/{id}.glb` canonical de tranh lech scale
-giua cac bien the cung model.
+duong dan tuong doi. ZIP co mot `.glb` goc se duoc copy nguyen sang
+`converted/{id}.glb` neu GLB da self-contained. Neu GLB tham chieu texture ngoai,
+worker import lai bang Blender va dong goi texture vao GLB dau ra.
 
 Vi du package GLB co texture ngoai:
 
@@ -175,7 +174,6 @@ Bien moi truong:
 | `USDZ_MAX_ATTEMPTS` | `3` | So lan retry toi da |
 | `USDZ_MAX_FILE_SIZE_MB` | `200` | Gioi han file USDZ dau ra |
 | `MODEL_ASSET_MAX_FILE_SIZE_MB` | `250` | Gioi han GLB sau phase 1 |
-| `MODEL_ASSET_CANONICAL_MAX_SIZE` | `1` | Canh lon nhat cua GLB canonical sau phase 1 |
 | `MODEL_PACKAGE_MAX_UNCOMPRESSED_MB` | `500` | Gioi han tong dung luong ZIP sau giai nen |
 | `USDZ_TARGET_SIZE_METERS` | `0.8` | Canh lon nhat cua model trong Quick Look |
 | `USDZ_KEEP_FAILED_WORK_DIR` | `false` | Giu thu muc tam khi can debug conversion |
@@ -254,8 +252,8 @@ pm2 restart model3d-usdz-worker --update-env
 
 ## Tieu chi hoan thanh
 
-- Moi format co the convert, ke ca GLB, tao `asset_status=pending` de worker sinh GLB canonical.
-- Worker dung Blender import/export de tao `converted/{id}.glb`.
+- Upload GLB tao `asset_status=ready`; format khac tao `asset_status=pending`.
+- Format khac duoc Blender import va upload `converted/{id}.glb`.
 - Model khong co animation chuyen sang `skipped` ma khong goi Blender.
 - Model co animation duoc convert, audit, upload va chuyen sang `ready`.
 - API USDZ chi tra file khi record `ready`.

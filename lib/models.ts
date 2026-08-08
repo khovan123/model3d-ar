@@ -138,6 +138,7 @@ export async function createSupabaseModel(input: {
   storagePath: string;
 }) {
   const extension = getModelExtension(input.storagePath);
+  const isUploadedGlb = extension === "glb";
   const isUploadedUsdz = extension === "usdz";
   const canConvert = canConvertToGlb(input.storagePath);
   const now = new Date().toISOString();
@@ -151,8 +152,8 @@ export async function createSupabaseModel(input: {
     createdAt: now,
     storagePath: input.storagePath,
     storageProvider: "supabase",
-    assetStatus: canConvert ? "pending" : "unsupported",
-    assetStoragePath: undefined,
+    assetStatus: isUploadedGlb ? "ready" : canConvert ? "pending" : "unsupported",
+    assetStoragePath: isUploadedGlb ? input.storagePath : undefined,
     assetAttempts: 0,
     assetUpdatedAt: now,
     usdzStatus: isUploadedUsdz ? "ready" : canConvert ? "pending" : "unsupported",

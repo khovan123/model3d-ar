@@ -3,7 +3,6 @@ import os
 import sys
 
 import bpy
-from mathutils import Vector
 
 
 def arguments():
@@ -11,12 +10,9 @@ def arguments():
     if "--" not in argv:
         raise RuntimeError("Expected input and output paths after --")
     values = argv[argv.index("--") + 1 :]
-    if len(values) not in (2, 3):
-        raise RuntimeError("Usage: blender ... -- source_file output.glb [target_size]")
-    target_size = float(values[2]) if len(values) == 3 else 1.0
-    if target_size <= 0:
-        raise ValueError("target_size must be greater than zero")
-    return os.path.abspath(values[0]), os.path.abspath(values[1]), target_size
+    if len(values) != 2:
+        raise RuntimeError("Usage: blender ... -- source_file output.glb")
+    return os.path.abspath(values[0]), os.path.abspath(values[1])
 
 
 def supported_operator_args(operator, candidates):
@@ -119,62 +115,8 @@ def configure_animations():
     return tracks, strips
 
 
-def normalize_model_size(target_size):
-    bpy.context.scene.frame_set(bpy.context.scene.frame_start)
-    bpy.context.view_layer.update()
-
-    points = []
-    for item in bpy.context.scene.objects:
-        if item.type != "MESH":
-            continue
-        points.extend(item.matrix_world @ Vector(corner) for corner in item.bound_box)
-    if not points:
-        raise RuntimeError("Imported source does not contain mesh bounds")
-
-    minimum = Vector(
-        (
-            min(point.x for point in points),
-            min(point.y for point in points),
-            min(point.z for point in points),
-        )
-    )
-    maximum = Vector(
-        (
-            max(point.x for point in points),
-            max(point.y for point in points),
-            max(point.z for point in points),
-        )
-    )
-    size = maximum - minimum
-    largest = max(size.x, size.y, size.z)
-    if largest <= 0:
-        raise RuntimeError("Imported source has empty bounds")
-
-    root = bpy.data.objects.new("ModelSpaceCanonicalRoot", None)
-    bpy.context.scene.collection.objects.link(root)
-    top_level = [
-        item for item in bpy.context.scene.objects if item != root and item.parent is None
-    ]
-    for item in top_level:
-        world_matrix = item.matrix_world.copy()
-        item.parent = root
-        item.matrix_world = world_matrix
-
-    scale = target_size / largest
-    center = (minimum + maximum) * 0.5
-    root.scale = (scale, scale, scale)
-    root.location = (-center.x * scale, -minimum.y * scale, -center.z * scale)
-    bpy.context.view_layer.update()
-    return {
-        "sourceSize": [size.x, size.y, size.z],
-        "targetSize": target_size,
-        "scale": scale,
-        "topLevelObjects": len(top_level),
-    }
-
-
 def main():
-    input_path, output_path, target_size = arguments()
+    input_path, output_path = arguments()
     if not os.path.isfile(input_path):
         raise FileNotFoundError(input_path)
 
@@ -185,7 +127,6 @@ def main():
         raise RuntimeError("Imported source does not contain any mesh objects")
 
     nla_tracks, nla_strips = configure_animations()
-    normalization = normalize_model_size(target_size)
     export_args = supported_operator_args(
         bpy.ops.export_scene.gltf,
         {
@@ -229,7 +170,6 @@ def main():
                 "actions": len(bpy.data.actions),
                 "nlaTracks": nla_tracks,
                 "nlaStrips": nla_strips,
-                "normalization": normalization,
                 "frameStart": bpy.context.scene.frame_start,
                 "frameEnd": bpy.context.scene.frame_end,
                 "exportOptions": sorted(export_args.keys()),

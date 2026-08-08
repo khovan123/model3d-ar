@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
-import { access, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { access, copyFile, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -54,7 +54,6 @@ const maxAttempts = positiveNumber(process.env.USDZ_MAX_ATTEMPTS, 3);
 const maxFileSize = positiveNumber(process.env.USDZ_MAX_FILE_SIZE_MB, 200) * 1024 * 1024;
 const maxAssetFileSize = positiveNumber(process.env.MODEL_ASSET_MAX_FILE_SIZE_MB, 250) * 1024 * 1024;
 const maxPackageUncompressedSize = positiveNumber(process.env.MODEL_PACKAGE_MAX_UNCOMPRESSED_MB, 500) * 1024 * 1024;
-const canonicalAssetMaxSize = positiveNumber(process.env.MODEL_ASSET_CANONICAL_MAX_SIZE, 1);
 const targetSizeMeters = positiveNumber(process.env.USDZ_TARGET_SIZE_METERS, 0.8);
 const keepFailedWorkDir = process.env.USDZ_KEEP_FAILED_WORK_DIR === "true";
 const workRoot = process.env.USDZ_WORK_DIR ?? os.tmpdir();
@@ -424,6 +423,15 @@ async function convertAssetJob(job) {
   const extension = getModelExtension(job.storage_path);
   if (!extension) throw new Error("Model source path has no file extension.");
 
+  if (extension === "glb") {
+    await updatePhaseJob(job.id, "asset", {
+      asset_status: "ready",
+      asset_storage_path: job.storage_path,
+      asset_error: null
+    });
+    return;
+  }
+
   const tempDir = await mkdtemp(path.join(workRoot, "modelspace-asset-"));
   const inputPath = path.join(tempDir, `source.${extension}`);
   const packageDir = path.join(tempDir, "package");
@@ -454,16 +462,20 @@ async function convertAssetJob(job) {
     if (sourceExtension === "glb") {
       sourceGlb = await inspectGlbAnimations(sourcePath);
     }
-    blenderResult = await runCommand(blenderBin, [
-      "--background",
-      "--factory-startup",
-      "--python",
-      sourceToGlbScript,
-      "--",
-      sourcePath,
-      outputPath,
-      String(canonicalAssetMaxSize)
-    ]);
+    const shouldRepackGlb = sourceExtension === "glb" && Number(sourceGlb?.externalResources ?? 0) > 0;
+    if (sourceExtension === "glb" && !shouldRepackGlb) {
+      await copyFile(sourcePath, outputPath);
+    } else {
+      blenderResult = await runCommand(blenderBin, [
+        "--background",
+        "--factory-startup",
+        "--python",
+        sourceToGlbScript,
+        "--",
+        sourcePath,
+        outputPath
+      ]);
+    }
     await access(outputPath);
     const outputStat = await stat(outputPath);
     if (outputStat.size < 1024) throw new Error("Generated GLB is unexpectedly empty.");
@@ -489,6 +501,7 @@ async function convertAssetJob(job) {
       name: job.name,
       sourceExtension,
       sourceGlb,
+      repackedExternalResources: shouldRepackGlb,
       package: packageInfo,
       bytes: outputStat.size,
       storagePath,
@@ -671,7 +684,6 @@ async function checkEnvironment() {
     bucket,
     workRoot,
     maxAssetFileSizeMb: Math.round(maxAssetFileSize / 1024 / 1024),
-    canonicalAssetMaxSize,
     maxPackageUncompressedSizeMb: Math.round(maxPackageUncompressedSize / 1024 / 1024),
     targetSizeMeters,
     keepFailedWorkDir
