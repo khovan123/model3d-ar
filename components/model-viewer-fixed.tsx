@@ -6,6 +6,10 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { USDZExporter } from "three/addons/exporters/USDZExporter.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import {
+  disposeModelAnimationsForScene,
+  updateActiveModelAnimations
+} from "./model-viewer-ar";
 import styles from "./model-viewer.module.css";
 
 type ViewerMode = "ar" | "object";
@@ -710,7 +714,9 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
       }
     );
 
-    renderer.setAnimationLoop((_time, frame) => {
+    renderer.setAnimationLoop((time, frame) => {
+      updateActiveModelAnimations(time);
+
       const inArSession = Boolean(sessionRef.current);
       controls.enabled = modeRef.current === "object" && !inArSession;
       if (controls.enabled) controls.update();
@@ -780,6 +786,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
       disposed = true;
       resizeObserver.disconnect();
       renderer.setAnimationLoop(null);
+      disposeModelAnimationsForScene(scene);
       clearHoldTimer();
       renderer.domElement.removeEventListener("touchstart", onTouchStart);
       renderer.domElement.removeEventListener("touchmove", onTouchMove);

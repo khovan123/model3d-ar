@@ -40,6 +40,7 @@ const ANIMATION_SOURCE_KEY = "modelSpaceAnimationSourceId";
 const animationStates: AnimationState[] = [];
 const animationClipsBySourceId = new Map<string, THREE.AnimationClip[]>();
 let animationSourceSequence = 0;
+let lastAnimationFrameTime: number | null = null;
 
 function animationTrackKey(track: THREE.KeyframeTrack) {
   try {
@@ -130,6 +131,44 @@ function pruneAnimationStates() {
   }
 }
 
+export function updateActiveModelAnimations(time: number) {
+  if (animationStates.length === 0) {
+    lastAnimationFrameTime = null;
+    return;
+  }
+
+  const previous = lastAnimationFrameTime ?? time;
+  const delta = THREE.MathUtils.clamp((time - previous) / 1000, 0, 0.1);
+  lastAnimationFrameTime = time;
+
+  if (delta <= 0) return;
+  for (const state of animationStates) {
+    state.mixer.update(delta);
+  }
+}
+
+export function disposeModelAnimationsForScene(scene: THREE.Object3D) {
+  for (let index = animationStates.length - 1; index >= 0; index -= 1) {
+    const state = animationStates[index];
+    let current: THREE.Object3D | null = state.root;
+    let belongsToScene = false;
+
+    while (current) {
+      if (current === scene) {
+        belongsToScene = true;
+        break;
+      }
+      current = current.parent;
+    }
+
+    if (!belongsToScene) continue;
+    animationStates.splice(index, 1);
+    disposeAnimationState(state);
+  }
+
+  if (animationStates.length === 0) lastAnimationFrameTime = null;
+}
+
 function startAnimationSet(root: THREE.Object3D, sourceClips: THREE.AnimationClip[]) {
   const clips = choosePlaybackClips(sourceClips);
   const sourceId = `modelspace-animation-${++animationSourceSequence}`;
@@ -205,38 +244,6 @@ function installGLTFAnimationPlayback() {
     };
 
     return originalLoad.call(this, url, wrappedOnLoad, onProgress, onError);
-  };
-}
-
-/**
- * Update mixers immediately before the real Three.js render. This is more
- * reliable than wrapping setAnimationLoop because the same render path is used
- * by normal Object mode and WebXR, and it remains valid if WebXR replaces its
- * internal animation callback while a session starts.
- */
-function installAnimationRenderUpdate() {
-  const rendererPrototype = THREE.WebGLRenderer.prototype as THREE.WebGLRenderer & {
-    __modelSpaceAnimationRenderPatch?: boolean;
-  };
-  if (rendererPrototype.__modelSpaceAnimationRenderPatch) return;
-  rendererPrototype.__modelSpaceAnimationRenderPatch = true;
-
-  const originalRender = THREE.WebGLRenderer.prototype.render;
-  const rendererTimes = new WeakMap<THREE.WebGLRenderer, number>();
-
-  THREE.WebGLRenderer.prototype.render = function (scene: THREE.Object3D, camera: THREE.Camera) {
-    const now = performance.now();
-    const previous = rendererTimes.get(this) ?? now;
-    const delta = THREE.MathUtils.clamp((now - previous) / 1000, 0, 0.1);
-    rendererTimes.set(this, now);
-
-    if (delta > 0) {
-      for (const state of animationStates) {
-        state.mixer.update(delta);
-      }
-    }
-
-    return originalRender.call(this, scene, camera);
   };
 }
 
@@ -425,5 +432,4 @@ function installUSDZTextureAndAnimationCompatibility() {
 }
 
 installGLTFAnimationPlayback();
-installAnimationRenderUpdate();
 installUSDZTextureAndAnimationCompatibility();
