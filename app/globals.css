@@ -84,6 +84,11 @@ button { color: inherit; }
 .model-info h3 { margin: 0 0 5px; font-size: 18px; }
 .model-info p { margin: 0 0 8px; color: var(--muted); font-size: 13px; line-height: 1.4; max-width: 430px; }
 .model-info small { color: #8b8d92; font-size: 11px; }
+.model-edit-fields { display: grid; gap: 7px; margin-bottom: 9px; max-width: 480px; }
+.model-edit-fields input, .model-edit-fields textarea { width: 100%; border: 1px solid var(--line); background: white; padding: 9px 10px; outline: none; resize: vertical; }
+.model-edit-fields input:focus, .model-edit-fields textarea:focus { border-color: var(--ink); box-shadow: 0 0 0 1px var(--ink); }
+.model-edit-fields input { font-size: 16px; font-weight: 800; }
+.model-edit-fields textarea { min-height: 72px; font-size: 13px; line-height: 1.4; }
 .usdz-status { display: block; width: fit-content; margin-top: 9px; border-left: 3px solid; padding: 4px 7px; background: #f1f1ef; color: #5e6064; font-size: 10px; font-weight: 900; text-transform: uppercase; letter-spacing: 0; }
 .usdz-status-pending { border-color: #b98516; background: #fff7df; color: #76550e; }
 .usdz-status-processing { border-color: #247c9c; background: #e8f6fa; color: #17576e; }

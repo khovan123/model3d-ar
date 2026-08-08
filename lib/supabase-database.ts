@@ -138,6 +138,23 @@ export async function deleteDatabaseModel(id: string) {
   return rows.length > 0;
 }
 
+export async function updateDatabaseModelMetadata(
+  id: string,
+  values: { name: string; description: string }
+) {
+  const query = new URLSearchParams({ id: `eq.${id}` });
+  const response = await databaseRequest(`/models?${query}`, {
+    method: "PATCH",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({
+      name: values.name,
+      description: values.description
+    })
+  });
+  const rows = (await response.json()) as ModelRow[];
+  return rows[0] ? fromRow(rows[0]) : null;
+}
+
 export async function retryDatabaseModelUsdz(id: string) {
   const query = new URLSearchParams({ id: `eq.${id}` });
   const response = await databaseRequest(`/models?${query}`, {

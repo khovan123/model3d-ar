@@ -6,7 +6,8 @@ import {
   getDatabaseModel,
   insertDatabaseModel,
   isSupabaseDatabaseConfigured,
-  listDatabaseModels
+  listDatabaseModels,
+  updateDatabaseModelMetadata
 } from "@/lib/supabase-database";
 import { canConvertToGlb, getModelExtension } from "@/lib/model-file-types";
 import type { ModelRecord, PublicModel } from "@/types/model";
@@ -196,6 +197,32 @@ export async function deleteModel(id: string): Promise<boolean> {
     await unlink(path.join(UPLOAD_DIR, deleted.storedFileName)).catch(() => undefined);
   }
   return true;
+}
+
+export async function updateModelMetadata(
+  id: string,
+  values: { name: string; description: string }
+): Promise<PublicModel | null> {
+  if (isSupabaseDatabaseConfigured() && await getDatabaseModel(id)) {
+    const updated = await updateDatabaseModelMetadata(id, values);
+    return updated ? toPublicModel(updated) : null;
+  }
+
+  let updated: ModelRecord | undefined;
+  writeQueue = writeQueue.then(async () => {
+    const records = await readRecords();
+    const index = records.findIndex((item) => item.id === id);
+    if (index < 0) return;
+    updated = {
+      ...records[index],
+      name: values.name,
+      description: values.description
+    };
+    records[index] = updated;
+    await writeRecords(records);
+  });
+  await writeQueue;
+  return updated ? toPublicModel(updated) : null;
 }
 
 export function getUploadPath(storedFileName: string) {

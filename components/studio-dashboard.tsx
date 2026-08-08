@@ -68,6 +68,10 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
   const [token, setToken] = useState("");
   const [dragging, setDragging] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [savingId, setSavingId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -288,6 +292,53 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
     setMessage({ type: "success", text: "Đã xóa model." });
   }
 
+  function beginEdit(model: PublicModel) {
+    setMessage(null);
+    setEditingId(model.id);
+    setEditName(model.name);
+    setEditDescription(model.description);
+  }
+
+  function cancelEdit() {
+    setEditingId(null);
+    setEditName("");
+    setEditDescription("");
+  }
+
+  async function saveMetadata(model: PublicModel) {
+    const nextName = editName.trim();
+    if (nextName.length < 2) {
+      setMessage({ type: "error", text: "Tên model phải có ít nhất 2 ký tự." });
+      return;
+    }
+
+    setSavingId(model.id);
+    setMessage(null);
+    const response = await fetch(`/api/models/${model.id}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { "x-upload-token": token } : {})
+      },
+      body: JSON.stringify({
+        name: nextName,
+        description: editDescription.trim()
+      })
+    });
+    const result = await response.json().catch(() => ({}));
+    setSavingId(null);
+
+    if (!response.ok) {
+      setMessage({ type: "error", text: result.message ?? "Không thể cập nhật thông tin model." });
+      return;
+    }
+
+    const updated = result.data as PublicModel;
+    setModels((items) => items.map((item) => item.id === model.id ? updated : item));
+    cancelEdit();
+    setMessage({ type: "success", text: "Đã cập nhật tên và mô tả model." });
+  }
+
   async function retryUsdz(model: PublicModel) {
     const response = await fetch(`/api/models/${model.id}/usdz/retry`, {
       method: "POST",
@@ -371,8 +422,31 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
                 <article className="model-card" key={model.id}>
                   <div className="model-index">{String(models.indexOf(model) + 1).padStart(2, "0")}</div>
                   <div className="model-info">
-                    <h3>{model.name}</h3>
-                    <p>{model.description || model.originalFileName}</p>
+                    {editingId === model.id ? (
+                      <div className="model-edit-fields">
+                        <input
+                          value={editName}
+                          onChange={(event) => setEditName(event.target.value)}
+                          maxLength={100}
+                          aria-label="Tên model"
+                          autoFocus
+                        />
+                        <textarea
+                          value={editDescription}
+                          onChange={(event) => setEditDescription(event.target.value)}
+                          maxLength={500}
+                          rows={3}
+                          aria-label="Mô tả model"
+                          placeholder="Mô tả model"
+                        />
+                        <small>{editDescription.length}/500 ký tự</small>
+                      </div>
+                    ) : (
+                      <>
+                        <h3>{model.name}</h3>
+                        <p>{model.description || model.originalFileName}</p>
+                      </>
+                    )}
                     <small>{formatBytes(model.size)} · {formatDate(model.createdAt)}</small>
                     <span className={`usdz-status usdz-status-${model.assetStatus}`}>
                       {ASSET_STATUS_LABELS[model.assetStatus]}
@@ -393,6 +467,23 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
                     <img src={`/api/models/${model.id}/qr`} alt={`QR mở ${model.name}`} />
                   </div>
                   <div className="model-actions">
+                    {editingId === model.id ? (
+                      <>
+                        <button
+                          type="button"
+                          className="mini-button"
+                          disabled={savingId === model.id}
+                          onClick={() => void saveMetadata(model)}
+                        >
+                          {savingId === model.id ? "Đang lưu…" : "Lưu"}
+                        </button>
+                        <button type="button" className="mini-button" disabled={savingId === model.id} onClick={cancelEdit}>
+                          Hủy
+                        </button>
+                      </>
+                    ) : (
+                      <button type="button" className="mini-button" onClick={() => beginEdit(model)}>Sửa</button>
+                    )}
                     {model.assetStatus === "ready" ? (
                       <Link href={model.viewerPath} target="_blank" className="mini-button">Mở</Link>
                     ) : (

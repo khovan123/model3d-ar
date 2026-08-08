@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { isAuthorized } from "@/lib/http";
-import { deleteModel, getModel, getStoredModel } from "@/lib/models";
+import { deleteModel, getModel, getStoredModel, updateModelMetadata } from "@/lib/models";
 import { logWarning, RequestError, withRequestLogging } from "@/lib/request-logger";
 import { removeStorageObject, storageObjectExists } from "@/lib/supabase-storage";
 
@@ -8,6 +9,11 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Context = { params: Promise<{ id: string }> };
+
+const metadataUpdateSchema = z.object({
+  name: z.string().trim().min(2, "Tên model phải có ít nhất 2 ký tự.").max(100),
+  description: z.string().trim().max(500)
+}).strict();
 
 async function handleGET(_request: NextRequest, context: Context) {
   const { id } = await context.params;
@@ -17,6 +23,34 @@ async function handleGET(_request: NextRequest, context: Context) {
   }
 
   return NextResponse.json({ data: model });
+}
+
+async function handlePATCH(request: NextRequest, context: Context) {
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ message: "Mã quản trị không hợp lệ." }, { status: 401 });
+  }
+
+  const parsed = metadataUpdateSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json(
+      { message: parsed.error.issues[0]?.message ?? "Tên hoặc mô tả không hợp lệ." },
+      { status: 400 }
+    );
+  }
+
+  const { id } = await context.params;
+  try {
+    const updated = await updateModelMetadata(id, parsed.data);
+    if (!updated) {
+      return NextResponse.json({ message: "Không tìm thấy model." }, { status: 404 });
+    }
+    return NextResponse.json({ data: updated });
+  } catch (error) {
+    throw new RequestError(500, "Không thể cập nhật thông tin model.", {
+      cause: error,
+      code: "MODEL_METADATA_UPDATE_FAILED"
+    });
+  }
 }
 
 async function handleDELETE(request: NextRequest, context: Context) {
@@ -77,4 +111,5 @@ async function handleDELETE(request: NextRequest, context: Context) {
 }
 
 export const GET = withRequestLogging(handleGET);
+export const PATCH = withRequestLogging(handlePATCH);
 export const DELETE = withRequestLogging(handleDELETE);
