@@ -211,7 +211,14 @@ async function runCommand(command, commandArgs, options = {}) {
     });
     let stdout = "";
     let stderr = "";
-    const append = (current, chunk) => `${current}${chunk}`.slice(-40000);
+    const maxOutputLength = options.maxOutputLength ?? 40000;
+    const append = (current, chunk) => {
+      const next = `${current}${chunk}`;
+      if (maxOutputLength === 0) return next;
+      return options.keepOutputStart
+        ? next.slice(0, maxOutputLength)
+        : next.slice(-maxOutputLength);
+    };
     child.stdout.on("data", (chunk) => { stdout = append(stdout, chunk); });
     child.stderr.on("data", (chunk) => { stderr = append(stderr, chunk); });
     child.once("error", reject);
@@ -242,7 +249,10 @@ async function auditUsdz(usdzPath, rootLayerPath) {
     return { skeletonAudit: "skipped", archiveFiles: listing.stdout.trim().split(/\r?\n/).length };
   }
 
-  const output = await runCommand(usdcatBin, [rootLayerPath]);
+  const output = await runCommand(usdcatBin, [rootLayerPath], {
+    keepOutputStart: true,
+    maxOutputLength: 2 * 1024 * 1024
+  });
   const text = output.stdout;
   const markers = {
     skelRoot: text.includes("SkelRoot"),
