@@ -62,7 +62,7 @@ const WEBXR_FRAME_COVERAGE = 0.38;
 const WEBXR_FALLBACK_SCALE = 0.28;
 const WEBXR_MIN_INITIAL_SCALE = 0.1;
 const WEBXR_MAX_INITIAL_SCALE = 0.42;
-const QUICK_LOOK_TARGET_MAX_SIZE_METERS = 0.32;
+const QUICK_LOOK_TARGET_MAX_SIZE_METERS = 0.8;
 
 function isAppleMobile() {
   return /iPad|iPhone|iPod/.test(navigator.userAgent) ||

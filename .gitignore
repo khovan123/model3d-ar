@@ -9,3 +9,4 @@ data/uploads/
 .DS_Store
 *.tsbuildinfo
 __pycache__/
+.codebase-memory/

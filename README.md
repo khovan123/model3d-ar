@@ -50,7 +50,7 @@ Dữ liệu được giữ trong Docker volume `modelspace_data`.
 | `USDCAT_BIN` | Đường dẫn `usdcat` dùng để audit skeleton, mặc định `usdcat` |
 | `USDZ_POLL_INTERVAL_MS` | Chu kỳ worker tìm job mới, mặc định 15000 ms |
 | `USDZ_MAX_ATTEMPTS` | Số lần chuyển đổi tối đa, mặc định 3 |
-| `USDZ_TARGET_SIZE_METERS` | Kích thước vật lý cạnh lớn nhất trong Quick Look, mặc định 0.32 m |
+| `USDZ_TARGET_SIZE_METERS` | Kích thước vật lý cạnh lớn nhất trong Quick Look, mặc định 0.8 m |
 
 ## Cấu hình Supabase Storage
 

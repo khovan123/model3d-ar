@@ -175,7 +175,7 @@ Bien moi truong:
 | `USDZ_MAX_FILE_SIZE_MB` | `200` | Gioi han file USDZ dau ra |
 | `MODEL_ASSET_MAX_FILE_SIZE_MB` | `250` | Gioi han GLB sau phase 1 |
 | `MODEL_PACKAGE_MAX_UNCOMPRESSED_MB` | `500` | Gioi han tong dung luong ZIP sau giai nen |
-| `USDZ_TARGET_SIZE_METERS` | `0.32` | Canh lon nhat cua model trong Quick Look |
+| `USDZ_TARGET_SIZE_METERS` | `0.8` | Canh lon nhat cua model trong Quick Look |
 | `USDZ_KEEP_FAILED_WORK_DIR` | `false` | Giu thu muc tam khi can debug conversion |
 
 Worker can cac bien Supabase server-only dang co:
