@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { USDZExporter } from "three/addons/exporters/USDZExporter.js";
 
 // Keep the existing animation, USDZ and texture compatibility patches active.
 import "./model-viewer-ar";
@@ -15,6 +16,11 @@ type Props = {
   description: string;
   assetUrl: string;
   audioUrl?: string;
+};
+
+type ModelSpaceInfo = {
+  name: string;
+  description: string;
 };
 
 type XRSessionOptionsLike = {
@@ -38,12 +44,18 @@ type AnchorPrototypeLike = HTMLAnchorElement & {
   __modelSpaceQuickLookInfoPatch?: boolean;
 };
 
+type USDZExporterPrototypeLike = USDZExporter & {
+  __modelSpaceEmbeddedPlaquePatch?: boolean;
+};
+
 const modelNamesByAssetUrl = new Map<string, string>();
+const modelDescriptionsByAssetUrl = new Map<string, string>();
 const NAMEPLATE_OBJECT_NAME = "__modelspace_nameplate__";
+const QUICK_LOOK_PLAQUE_NAME = "__modelspace_quicklook_plaque__";
 const AR_OVERLAY_ROOT_ID = "modelspace-ar-overlay-root";
 const QUICK_LOOK_INFO_EVENT = "modelspace:quicklook-info";
 
-let currentQuickLookInfo: { name: string; description: string } | null = null;
+let currentQuickLookInfo: ModelSpaceInfo | null = null;
 
 function roundedRectPath(
   context: CanvasRenderingContext2D,
@@ -169,16 +181,241 @@ function install3DNameplatePatch() {
   ) {
     const assetUrl = String(url);
     const wrappedOnLoad: LoadCallback = (gltf) => {
+      const modelName = modelNamesByAssetUrl.get(assetUrl);
+      const description = modelDescriptionsByAssetUrl.get(assetUrl) ?? "";
+
+      // Store metadata on the GLB itself before the base viewer clones the
+      // normalized root for USDZ. Object3D.clone() preserves userData, so the
+      // exporter patch can always recover the right model information.
+      if (modelName) {
+        gltf.scene.userData.modelSpaceInfo = { name: modelName, description } satisfies ModelSpaceInfo;
+      }
+
       // Capture bounds before the base viewer normalizes the GLB. Adding the
-      // plate after onLoad returns keeps it out of the normalization bounds.
+      // live Three.js plate after onLoad returns keeps it out of normalization.
       const bounds = new THREE.Box3().setFromObject(gltf.scene);
       onLoad(gltf);
 
-      const modelName = modelNamesByAssetUrl.get(assetUrl);
       if (modelName) add3DNameplate(gltf, modelName, bounds);
     };
 
     return originalLoad.call(this, url, wrappedOnLoad, onProgress, onError);
+  };
+}
+
+function fitCanvasText(
+  context: CanvasRenderingContext2D,
+  text: string,
+  maxWidth: number,
+  startSize: number,
+  minSize: number,
+  weight = 800
+) {
+  let fontSize = startSize;
+  context.font = `${weight} ${fontSize}px Arial, sans-serif`;
+  while (fontSize > minSize && context.measureText(text).width > maxWidth) {
+    fontSize -= 2;
+    context.font = `${weight} ${fontSize}px Arial, sans-serif`;
+  }
+  return fontSize;
+}
+
+function drawDescriptionLines(
+  context: CanvasRenderingContext2D,
+  description: string,
+  x: number,
+  y: number,
+  maxWidth: number
+) {
+  const clean = description.replace(/\s+/g, " ").trim();
+  if (!clean) return;
+
+  context.font = "500 34px Arial, sans-serif";
+  context.fillStyle = "rgba(255,255,255,0.74)";
+  context.textAlign = "left";
+  context.textBaseline = "top";
+
+  const words = clean.split(" ");
+  const lines: string[] = [];
+  let line = "";
+
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (context.measureText(candidate).width <= maxWidth) {
+      line = candidate;
+      continue;
+    }
+    if (line) lines.push(line);
+    line = word;
+    if (lines.length === 2) break;
+  }
+  if (line && lines.length < 2) lines.push(line);
+
+  const consumed = lines.join(" ");
+  if (clean.length > consumed.length && lines.length > 0) {
+    let last = lines.length - 1;
+    let shortened = `${lines[last]}…`;
+    while (shortened.length > 2 && context.measureText(shortened).width > maxWidth) {
+      shortened = `${shortened.slice(0, -2)}…`;
+    }
+    lines[last] = shortened;
+  }
+
+  lines.forEach((text, index) => context.fillText(text, x, y + index * 44));
+}
+
+function createQuickLookPlaqueTexture(info: ModelSpaceInfo) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1024;
+  canvas.height = 360;
+  const context = canvas.getContext("2d");
+  if (!context) return null;
+
+  // Use a fully opaque card because it survives USDZ / Quick Look conversion
+  // more consistently than DOM-like translucent UI.
+  roundedRectPath(context, 8, 8, 1008, 344, 52);
+  context.fillStyle = "#111111";
+  context.fill();
+  context.lineWidth = 5;
+  context.strokeStyle = "rgba(255,255,255,0.3)";
+  context.stroke();
+
+  context.textAlign = "left";
+  context.textBaseline = "top";
+  context.fillStyle = "rgba(255,255,255,0.52)";
+  context.font = "800 25px Arial, sans-serif";
+  context.fillText("MODEL 3D", 54, 44);
+
+  const name = info.name.trim() || "Model 3D";
+  const nameFontSize = fitCanvasText(context, name, 720, 66, 38);
+  context.font = `800 ${nameFontSize}px Arial, sans-serif`;
+  context.fillStyle = "#ffffff";
+  context.fillText(name, 54, 86);
+
+  drawDescriptionLines(context, info.description, 54, 180, 760);
+
+  context.beginPath();
+  context.arc(906, 180, 65, 0, Math.PI * 2);
+  context.fillStyle = "#ffffff";
+  context.fill();
+  context.fillStyle = "#111111";
+  context.font = "900 88px Arial, sans-serif";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText("!", 906, 186);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function findModelSpaceInfo(scene: THREE.Object3D) {
+  let info: ModelSpaceInfo | null = null;
+  scene.traverse((object) => {
+    if (info) return;
+    const candidate = object.userData.modelSpaceInfo as Partial<ModelSpaceInfo> | undefined;
+    if (!candidate || typeof candidate.name !== "string" || !candidate.name.trim()) return;
+    info = {
+      name: candidate.name,
+      description: typeof candidate.description === "string" ? candidate.description : ""
+    };
+  });
+  return info;
+}
+
+function createQuickLookPlaque(scene: THREE.Object3D, info: ModelSpaceInfo) {
+  const texture = createQuickLookPlaqueTexture(info);
+  if (!texture) return null;
+
+  // Do not let the older live-view nameplate affect sizing or duplicate itself
+  // in Quick Look. It shares resources with the live scene, so hide only.
+  const oldNameplate = scene.getObjectByName(NAMEPLATE_OBJECT_NAME);
+  const oldNameplateVisibility = oldNameplate?.visible;
+  if (oldNameplate) oldNameplate.visible = false;
+
+  const bounds = new THREE.Box3().setFromObject(scene);
+  const size = bounds.getSize(new THREE.Vector3());
+  const center = bounds.getCenter(new THREE.Vector3());
+  const largest = Math.max(size.x, size.y, size.z) || 1;
+
+  const geometry = new THREE.PlaneGeometry(largest * 0.82, largest * 0.288);
+  const makeMaterial = () => {
+    const material = new THREE.MeshStandardMaterial({
+      map: texture,
+      color: 0xffffff,
+      roughness: 1,
+      metalness: 0,
+      side: THREE.FrontSide
+    });
+    material.emissive.set(0xffffff);
+    material.emissiveMap = texture;
+    material.emissiveIntensity = 0.18;
+    material.toneMapped = false;
+    return material;
+  };
+
+  const frontMaterial = makeMaterial();
+  const backMaterial = makeMaterial();
+  const front = new THREE.Mesh(geometry, frontMaterial);
+  const back = new THREE.Mesh(geometry, backMaterial);
+  front.position.z = largest * 0.003;
+  back.position.z = -largest * 0.003;
+  back.rotation.y = Math.PI;
+
+  const plaque = new THREE.Group();
+  plaque.name = QUICK_LOOK_PLAQUE_NAME;
+  plaque.position.set(center.x, bounds.max.y + largest * 0.19, center.z);
+  plaque.add(front, back);
+  plaque.userData.modelSpaceOverlay = true;
+  scene.add(plaque);
+  scene.updateMatrixWorld(true);
+
+  return {
+    plaque,
+    geometry,
+    texture,
+    materials: [frontMaterial, backMaterial],
+    restoreOldNameplate: () => {
+      if (oldNameplate && oldNameplateVisibility !== undefined) {
+        oldNameplate.visible = oldNameplateVisibility;
+      }
+    }
+  };
+}
+
+function installEmbeddedQuickLookPlaquePatch() {
+  const prototype = USDZExporter.prototype as USDZExporterPrototypeLike;
+  if (prototype.__modelSpaceEmbeddedPlaquePatch) return;
+  prototype.__modelSpaceEmbeddedPlaquePatch = true;
+
+  const originalParseAsync = USDZExporter.prototype.parseAsync;
+
+  USDZExporter.prototype.parseAsync = async function (
+    scene: THREE.Object3D,
+    options?: Parameters<USDZExporter["parseAsync"]>[1]
+  ) {
+    const info = findModelSpaceInfo(scene);
+    if (!info || scene.getObjectByName(QUICK_LOOK_PLAQUE_NAME)) {
+      return originalParseAsync.call(this, scene, options);
+    }
+
+    const embedded = createQuickLookPlaque(scene, info);
+    if (!embedded) return originalParseAsync.call(this, scene, options);
+
+    try {
+      return await originalParseAsync.call(this, scene, options);
+    } finally {
+      embedded.plaque.removeFromParent();
+      embedded.restoreOldNameplate();
+      embedded.geometry.dispose();
+      embedded.materials.forEach((material) => material.dispose());
+      embedded.texture.dispose();
+      scene.updateMatrixWorld(true);
+    }
   };
 }
 
@@ -233,8 +470,8 @@ function installQuickLookInfoPatch() {
     }
 
     // AR Quick Look is a native iOS surface, so webpage DOM cannot stay on top
-    // of it. Use Apple's supported custom-action banner instead. Keep this
-    // cloned anchor alive so WebKit can send the Quick Look message event back.
+    // of it. Use Apple's supported custom-action banner when available. The
+    // embedded USDZ plaque remains the reliable fallback and is always visible.
     const quickLookAnchor = this.cloneNode(true) as HTMLAnchorElement;
     quickLookAnchor.dataset.modelSpaceQuickLook = "1";
     quickLookAnchor.style.position = "fixed";
@@ -275,11 +512,13 @@ function installQuickLookInfoPatch() {
 }
 
 install3DNameplatePatch();
+installEmbeddedQuickLookPlaquePatch();
 
 export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Props) {
-  // Register synchronously so GLTFLoader can resolve the display name even if
-  // the model finishes loading before React effects run.
+  // Register synchronously so GLTFLoader can resolve display metadata even if
+  // the child viewer starts loading immediately after mount.
   modelNamesByAssetUrl.set(assetUrl, modelName);
+  modelDescriptionsByAssetUrl.set(assetUrl, description);
 
   const audioRef = useRef<HTMLAudioElement>(null);
   const [infoOpen, setInfoOpen] = useState(false);
@@ -319,6 +558,9 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
       audioElement?.pause();
       if (modelNamesByAssetUrl.get(assetUrl) === modelName) {
         modelNamesByAssetUrl.delete(assetUrl);
+      }
+      if (modelDescriptionsByAssetUrl.get(assetUrl) === description) {
+        modelDescriptionsByAssetUrl.delete(assetUrl);
       }
       if (currentQuickLookInfo?.name === modelName) {
         currentQuickLookInfo = null;
