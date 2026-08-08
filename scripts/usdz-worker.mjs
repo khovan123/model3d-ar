@@ -52,6 +52,7 @@ const staleAfterMinutes = positiveNumber(process.env.USDZ_STALE_AFTER_MINUTES, 3
 const maxAttempts = positiveNumber(process.env.USDZ_MAX_ATTEMPTS, 3);
 const maxFileSize = positiveNumber(process.env.USDZ_MAX_FILE_SIZE_MB, 200) * 1024 * 1024;
 const targetSizeMeters = positiveNumber(process.env.USDZ_TARGET_SIZE_METERS, 0.32);
+const keepFailedWorkDir = process.env.USDZ_KEEP_FAILED_WORK_DIR === "true";
 const workRoot = process.env.USDZ_WORK_DIR ?? os.tmpdir();
 const blenderScript = path.join(process.cwd(), "scripts", "blender", "glb_to_usd.py");
 
@@ -267,6 +268,7 @@ async function convertJob(job) {
   const rootLayerPath = path.join(outputDir, "model.usdc");
   const usdzPath = path.join(tempDir, `${job.id}.usdz`);
   const storagePath = `usdz/${job.id}.usdz`;
+  let completed = false;
 
   try {
     await downloadStorageObject(job.storage_path, inputPath);
@@ -282,6 +284,7 @@ async function convertJob(job) {
         name: job.name,
         glb
       });
+      completed = true;
       return;
     }
 
@@ -301,7 +304,8 @@ async function convertJob(job) {
       modelId: job.id,
       name: job.name,
       glb,
-      blender
+      blender,
+      blenderWarnings: blenderResult.stderr.trim() || undefined
     });
 
     await runCommand(usdzipBin, [usdzPath, "--arkitAsset", rootLayerPath], { cwd: outputDir });
@@ -333,8 +337,18 @@ async function convertJob(job) {
       audit,
       blender
     });
+    completed = true;
   } finally {
-    await rm(tempDir, { recursive: true, force: true });
+    if (completed || !keepFailedWorkDir) {
+      await rm(tempDir, { recursive: true, force: true });
+    } else {
+      log("warn", "Retained failed conversion workspace for diagnostics.", {
+        modelId: job.id,
+        tempDir,
+        rootLayerPath,
+        usdzPath
+      });
+    }
   }
 }
 
@@ -385,7 +399,8 @@ async function checkEnvironment() {
     usdcat: await commandExists(usdcatBin, ["--help"]) ? "ok" : "optional-missing",
     bucket,
     workRoot,
-    targetSizeMeters
+    targetSizeMeters,
+    keepFailedWorkDir
   };
   log(hasBlender && hasUsdzip ? "info" : "error", "Environment check.", result);
   if (!hasBlender || !hasUsdzip) process.exitCode = 1;

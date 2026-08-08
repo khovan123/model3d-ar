@@ -113,6 +113,7 @@ Bien moi truong:
 | `USDZ_MAX_ATTEMPTS` | `3` | So lan retry toi da |
 | `USDZ_MAX_FILE_SIZE_MB` | `200` | Gioi han file USDZ dau ra |
 | `USDZ_TARGET_SIZE_METERS` | `0.32` | Canh lon nhat cua model trong Quick Look |
+| `USDZ_KEEP_FAILED_WORK_DIR` | `false` | Giu thu muc tam khi can debug conversion |
 
 Worker can cac bien Supabase server-only dang co:
 

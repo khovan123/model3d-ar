@@ -140,14 +140,29 @@ def main():
     if "FINISHED" not in result:
         raise RuntimeError(f"USD export failed: {result}")
 
-    armatures = sum(1 for item in bpy.data.objects if item.type == "ARMATURE")
+    armature_objects = [item for item in bpy.data.objects if item.type == "ARMATURE"]
+    skinned_meshes = [
+        item.name
+        for item in bpy.data.objects
+        if item.type == "MESH"
+        and any(modifier.type == "ARMATURE" for modifier in item.modifiers)
+    ]
+    deform_bones = sum(
+        1
+        for armature in armature_objects
+        for bone in armature.data.bones
+        if bone.use_deform
+    )
     animated_actions = len(bpy.data.actions)
     print(
         "MODELSPACE_RESULT="
         + json.dumps(
             {
                 "output": output_path,
-                "armatures": armatures,
+                "armatures": len(armature_objects),
+                "armatureNames": [item.name for item in armature_objects],
+                "deformBones": deform_bones,
+                "skinnedMeshes": skinned_meshes,
                 "actions": animated_actions,
                 "nlaTracks": nla_tracks,
                 "nlaStrips": nla_strips,
