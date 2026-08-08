@@ -771,7 +771,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
           : "Đang kiểm tra AR…";
 
   return (
-    <main className={styles.shell} data-mode={mode}>
+    <main className={styles.shell} data-mode={mode} data-ar-active={arActive ? "true" : "false"}>
       <div ref={mountRef} className={styles.canvas} />
 
       <header className={styles.topbar}>
@@ -838,25 +838,20 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
             <span className={styles.plane} />
             <span className={styles.phone} />
           </div>
-          <strong>{trackingReady ? "Di chuyển để chọn vị trí · chạm để đặt" : "Di chuyển điện thoại để bắt đầu"}</strong>
-          <span>{trackingReady ? "Model đang bám theo mặt phẳng trước camera" : "Hướng camera xuống sàn hoặc mặt bàn"}</span>
+          <strong>{trackingReady ? "Chạm để đặt model" : "Di chuyển điện thoại để tìm mặt phẳng"}</strong>
+          <span>{trackingReady ? "Model đang bám theo điểm ngắm." : "Hướng camera xuống sàn hoặc mặt bàn."}</span>
         </div>
       )}
 
-      {!loading && !error && mode === "ar" && arActive && placed && (
-        <div className={styles.gestureHint}>
-          {repositioning
-            ? "Đang di chuyển model · kéo rồi thả để đặt lại"
-            : "Vuốt nhanh để xoay · giữ model rồi kéo để di chuyển · chụm hai ngón để đổi kích thước"}
-        </div>
-      )}
-
-      {!loading && !error && mode === "object" && (
-        <div className={styles.objectHint}>Vuốt để xoay · chụm hai ngón để thu phóng</div>
+      {!loading && !error && mode === "ar" && arActive && placed && repositioning && (
+        <div className={styles.arHint}>Đang di chuyển model · thả tay để cố định</div>
       )}
 
       {shareMessage && <div className={styles.toast}>{shareMessage}</div>}
-      <span className={styles.srOnly}>{modelName}. {description}</span>
+
+      <p className={styles.srOnly} aria-live="polite">
+        {mode === "object" ? "Chế độ xem đối tượng" : arActive ? "Chế độ thực tế tăng cường đang hoạt động" : "Chế độ thực tế tăng cường"}
+      </p>
     </main>
   );
 }
