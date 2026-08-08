@@ -131,17 +131,33 @@ function pruneAnimationStates() {
   }
 }
 
-export function updateActiveModelAnimations(time: number) {
+/**
+ * Keep animation timing independent from the timestamp supplied by the render
+ * callback. Browsers may switch from window RAF timestamps to XRSession RAF
+ * timestamps when immersive AR starts. Some implementations do not preserve
+ * the same time base, which can make every computed delta <= 0 and freeze an
+ * otherwise valid AnimationMixer. performance.now() stays monotonic across the
+ * Object -> WebXR transition.
+ */
+export function updateActiveModelAnimations(_frameTime: number) {
   if (animationStates.length === 0) {
     lastAnimationFrameTime = null;
     return;
   }
 
-  const previous = lastAnimationFrameTime ?? time;
-  const delta = THREE.MathUtils.clamp((time - previous) / 1000, 0, 0.1);
-  lastAnimationFrameTime = time;
+  const now = performance.now();
+  const previous = lastAnimationFrameTime;
+  lastAnimationFrameTime = now;
 
+  if (previous == null) return;
+  const elapsedMs = now - previous;
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return;
+
+  // Do not fast-forward an animation after permission prompts, tab suspension,
+  // or the short hand-off while Chrome enters immersive AR.
+  const delta = THREE.MathUtils.clamp(elapsedMs / 1000, 0, 0.1);
   if (delta <= 0) return;
+
   for (const state of animationStates) {
     state.mixer.update(delta);
   }
@@ -236,6 +252,13 @@ function installGLTFAnimationPlayback() {
     onError?: LoadArguments[3]
   ) {
     const wrappedOnLoad: LoadCallback = (gltf) => {
+      // Skinned meshes can be incorrectly culled in AR because their default
+      // bounds describe the rest pose while the GPU deforms vertices with bones.
+      // Keep animated meshes renderable from the moving XR camera.
+      gltf.scene.traverse((object) => {
+        if (object instanceof THREE.SkinnedMesh) object.frustumCulled = false;
+      });
+
       // Never stop another load here. React development/streaming navigation can
       // leave an older GLTF request in flight; if it resolves late it must not
       // freeze the scene that is currently rendered.
