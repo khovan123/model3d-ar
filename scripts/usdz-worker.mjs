@@ -243,8 +243,17 @@ async function auditUsdz(usdzPath, rootLayerPath) {
 
   const output = await runCommand(usdcatBin, [rootLayerPath]);
   const text = output.stdout;
+  const markers = {
+    skelRoot: text.includes("SkelRoot"),
+    skeleton: text.includes("Skeleton"),
+    skelAnimation: text.includes("SkelAnimation"),
+    skelBindingApi: text.includes("SkelBindingAPI")
+  };
   return {
-    skeletonAudit: text.includes("SkelRoot") || text.includes("SkelAnimation") ? "found" : "missing",
+    skeletonAudit: (markers.skelRoot || markers.skeleton) && markers.skelAnimation
+      ? "found"
+      : "missing",
+    markers,
     archiveFiles: listing.stdout.trim().split(/\r?\n/).length
   };
 }
@@ -287,6 +296,13 @@ async function convertJob(job) {
       String(targetSizeMeters)
     ]);
     await access(rootLayerPath);
+    const blender = blenderReport(blenderResult.stdout);
+    log("info", "Blender USD export completed.", {
+      modelId: job.id,
+      name: job.name,
+      glb,
+      blender
+    });
 
     await runCommand(usdzipBin, [usdzPath, "--arkitAsset", rootLayerPath], { cwd: outputDir });
     const outputStat = await stat(usdzPath);
@@ -297,7 +313,9 @@ async function convertJob(job) {
 
     const audit = await auditUsdz(usdzPath, rootLayerPath);
     if (audit.skeletonAudit === "missing") {
-      throw new Error("USD output does not contain SkelRoot/SkelAnimation; animated Quick Look is not guaranteed.");
+      throw new Error(
+        `USD output is missing a complete Skeleton/SkelAnimation binding: ${JSON.stringify(audit)}`
+      );
     }
 
     await uploadStorageObject(storagePath, usdzPath);
@@ -313,7 +331,7 @@ async function convertJob(job) {
       storagePath,
       glb,
       audit,
-      blender: blenderReport(blenderResult.stdout)
+      blender
     });
   } finally {
     await rm(tempDir, { recursive: true, force: true });
