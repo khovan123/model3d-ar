@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
-import { access, copyFile, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { access, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -54,7 +54,10 @@ const maxAttempts = positiveNumber(process.env.USDZ_MAX_ATTEMPTS, 3);
 const maxFileSize = positiveNumber(process.env.USDZ_MAX_FILE_SIZE_MB, 200) * 1024 * 1024;
 const maxAssetFileSize = positiveNumber(process.env.MODEL_ASSET_MAX_FILE_SIZE_MB, 250) * 1024 * 1024;
 const maxPackageUncompressedSize = positiveNumber(process.env.MODEL_PACKAGE_MAX_UNCOMPRESSED_MB, 500) * 1024 * 1024;
-const targetSizeMeters = positiveNumber(process.env.USDZ_TARGET_SIZE_METERS, 0.8);
+const targetSizeMeters = positiveNumber(
+  process.env.MODEL_TARGET_SIZE_METERS,
+  positiveNumber(process.env.USDZ_TARGET_SIZE_METERS, 0.8)
+);
 const keepFailedWorkDir = process.env.USDZ_KEEP_FAILED_WORK_DIR === "true";
 const workRoot = process.env.USDZ_WORK_DIR ?? os.tmpdir();
 const blenderScript = path.join(process.cwd(), "scripts", "blender", "glb_to_usd.py");
@@ -423,15 +426,6 @@ async function convertAssetJob(job) {
   const extension = getModelExtension(job.storage_path);
   if (!extension) throw new Error("Model source path has no file extension.");
 
-  if (extension === "glb") {
-    await updatePhaseJob(job.id, "asset", {
-      asset_status: "ready",
-      asset_storage_path: job.storage_path,
-      asset_error: null
-    });
-    return;
-  }
-
   const tempDir = await mkdtemp(path.join(workRoot, "modelspace-asset-"));
   const inputPath = path.join(tempDir, `source.${extension}`);
   const packageDir = path.join(tempDir, "package");
@@ -457,25 +451,26 @@ async function convertAssetJob(job) {
       };
     }
 
-    let blenderResult;
-    let sourceGlb;
-    if (sourceExtension === "glb") {
-      sourceGlb = await inspectGlbAnimations(sourcePath);
-    }
-    const shouldRepackGlb = sourceExtension === "glb" && Number(sourceGlb?.externalResources ?? 0) > 0;
-    if (sourceExtension === "glb" && !shouldRepackGlb) {
-      await copyFile(sourcePath, outputPath);
-    } else {
-      blenderResult = await runCommand(blenderBin, [
-        "--background",
-        "--factory-startup",
-        "--python",
-        sourceToGlbScript,
-        "--",
-        sourcePath,
-        outputPath
-      ]);
-    }
+    const sourceGlb = sourceExtension === "glb"
+      ? await inspectGlbAnimations(sourcePath)
+      : undefined;
+
+    // Canonicalize every supported source, including self-contained GLB files.
+    // Copying an original GLB verbatim preserves authoring-unit differences
+    // (for example the Sketchfab Blue Flower original is ~20x smaller than the
+    // converted derivative). Encoding the target size in the viewer GLB makes
+    // WebXR and the later USDZ/Quick Look phase consume the same physical scale.
+    const blenderResult = await runCommand(blenderBin, [
+      "--background",
+      "--factory-startup",
+      "--python",
+      sourceToGlbScript,
+      "--",
+      sourcePath,
+      outputPath,
+      String(targetSizeMeters)
+    ]);
+
     await access(outputPath);
     const outputStat = await stat(outputPath);
     if (outputStat.size < 1024) throw new Error("Generated GLB is unexpectedly empty.");
@@ -489,25 +484,25 @@ async function convertAssetJob(job) {
         `Generated GLB still references external resources: ${JSON.stringify(glb.externalResourceUris)}`
       );
     }
-    const blender = blenderResult ? blenderReport(blenderResult.stdout) : undefined;
+    const blender = blenderReport(blenderResult.stdout);
     await uploadStorageObject(storagePath, outputPath, "model/gltf-binary");
     await updatePhaseJob(job.id, "asset", {
       asset_status: "ready",
       asset_storage_path: storagePath,
       asset_error: null
     });
-    log("info", "Source model converted to viewer GLB.", {
+    log("info", "Source model canonicalized to viewer GLB.", {
       modelId: job.id,
       name: job.name,
       sourceExtension,
       sourceGlb,
-      repackedExternalResources: shouldRepackGlb,
+      canonicalTargetSizeMeters: targetSizeMeters,
       package: packageInfo,
       bytes: outputStat.size,
       storagePath,
       glb,
       blender,
-      blenderWarnings: blenderResult?.stderr.trim() || undefined
+      blenderWarnings: blenderResult.stderr.trim() || undefined
     });
     completed = true;
   } finally {
