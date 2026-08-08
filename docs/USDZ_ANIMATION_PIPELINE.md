@@ -85,6 +85,10 @@ audio/{id}
 Worker nam tai `scripts/usdz-worker.mjs` va Blender script nam tai
 `scripts/blender/glb_to_usd.py`.
 
+Neu gap loi audit skeleton, static model khong chuyen sang `skipped`, hoac can
+xem lai case thuc te da debug tren VPS, doc them
+`docs/USDZ_WORKER_TROUBLESHOOTING.md`.
+
 Truoc khi goi Blender, worker doc JSON chunk cua GLB va dem `animations[].channels`.
 Neu khong co channel, job chuyen sang `skipped`; Blender, `usdzip` va upload USDZ
 deu khong chay cho model do.
