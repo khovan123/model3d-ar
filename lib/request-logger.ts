@@ -98,6 +98,32 @@ function formatRequestId(requestId: string) {
   return colorize(requestId, "magenta");
 }
 
+async function errorResponseDetails(response: Response) {
+  const contentType = response.headers.get("content-type") ?? "";
+
+  try {
+    const text = await response.clone().text();
+    if (!text) return undefined;
+
+    const truncated = text.length > 4000 ? `${text.slice(0, 4000)}...[TRUNCATED]` : text;
+    if (!contentType.includes("application/json")) return truncated;
+
+    try {
+      return JSON.parse(truncated) as unknown;
+    } catch {
+      return truncated;
+    }
+  } catch (error) {
+    return { unableToReadErrorResponse: errorDetails(error) };
+  }
+}
+
+function responseMessage(details: unknown) {
+  if (!details || typeof details !== "object" || !("message" in details)) return undefined;
+  const message = details.message;
+  return typeof message === "string" ? message : undefined;
+}
+
 function errorDetails(error: unknown, depth = 0): Record<string, unknown> {
   if (depth > 3) return { message: "Cause chain truncated" };
   if (!(error instanceof Error)) return { value: String(error) };
@@ -128,16 +154,33 @@ export function logRequestStarted(request: NextRequest, requestId: string) {
   );
 }
 
-function logRequestCompleted(
+async function logRequestCompleted(
   request: NextRequest,
   response: Response,
   startedAt: number,
   requestId: string
 ) {
   const level = response.status >= 500 ? console.error : response.status >= 400 ? console.warn : console.info;
-  level(
-    `${formatTime()} ${colorize("[HTTP END]", response.status >= 500 ? "red" : response.status >= 400 ? "yellow" : "green")} ${formatMethod(request.method)} ${colorize(safePath(request.url), "blue")} status=${formatStatus(response.status)} duration=${formatDuration(startedAt)} requestId=${formatRequestId(requestId)}`
-  );
+  const label = response.status >= 500
+    ? "[HTTP SERVER ERROR]"
+    : response.status >= 400
+      ? "[HTTP CLIENT ERROR]"
+      : "[HTTP END]";
+  const line = `${formatTime()} ${colorize(label, response.status >= 500 ? "red" : response.status >= 400 ? "yellow" : "green")} ${formatMethod(request.method)} ${colorize(safePath(request.url), "blue")} status=${formatStatus(response.status)} duration=${formatDuration(startedAt)} requestId=${formatRequestId(requestId)}`;
+
+  if (response.status < 400) {
+    level(line);
+    return;
+  }
+
+  const details = await errorResponseDetails(response);
+  level(line, {
+    requestId,
+    status: response.status,
+    statusText: response.statusText || undefined,
+    message: responseMessage(details),
+    response: details
+  });
 }
 
 export function logRequestError(
@@ -177,7 +220,7 @@ export function withRequestLogging<Context>(handler: RouteHandler<Context>): Rou
     try {
       const response = await handler(request, context);
       response.headers.set(REQUEST_ID_HEADER, requestId);
-      logRequestCompleted(request, response, startedAt, requestId);
+      await logRequestCompleted(request, response, startedAt, requestId);
       return response;
     } catch (error) {
       const knownError = error instanceof RequestError ? error : null;
@@ -190,7 +233,7 @@ export function withRequestLogging<Context>(handler: RouteHandler<Context>): Rou
         { message, requestId },
         { status, headers: { [REQUEST_ID_HEADER]: requestId } }
       );
-      logRequestCompleted(request, response, startedAt, requestId);
+      await logRequestCompleted(request, response, startedAt, requestId);
       return response;
     }
   };
