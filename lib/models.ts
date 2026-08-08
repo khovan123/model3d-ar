@@ -38,7 +38,7 @@ async function writeRecords(records: ModelRecord[]) {
   await rename(tempFile, INDEX_FILE);
 }
 
-function serialize(record: ModelRecord): PublicModel {
+export function toPublicModel(record: ModelRecord): PublicModel {
   return {
     id: record.id,
     name: record.name,
@@ -60,12 +60,12 @@ export async function listModels(): Promise<PublicModel[]> {
   )];
   return records
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map(serialize);
+    .map(toPublicModel);
 }
 
 export async function getModel(id: string): Promise<PublicModel | null> {
   const record = await getStoredModel(id);
-  return record ? serialize(record) : null;
+  return record ? toPublicModel(record) : null;
 }
 
 export async function getStoredModel(id: string): Promise<ModelRecord | null> {
@@ -107,7 +107,7 @@ export async function createModel(input: {
   });
   await writeQueue;
 
-  return serialize(record);
+  return toPublicModel(record);
 }
 
 export async function createSupabaseModel(input: {
@@ -132,7 +132,7 @@ export async function createSupabaseModel(input: {
   };
 
   if (isSupabaseDatabaseConfigured()) {
-    return serialize(await insertDatabaseModel(record));
+    return toPublicModel(await insertDatabaseModel(record));
   }
 
   await ensureStorage();
@@ -142,7 +142,7 @@ export async function createSupabaseModel(input: {
     await writeRecords(records);
   });
   await writeQueue;
-  return serialize(record);
+  return toPublicModel(record);
 }
 
 export async function deleteModel(id: string): Promise<boolean> {
