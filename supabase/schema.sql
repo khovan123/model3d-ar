@@ -16,3 +16,37 @@ create index if not exists models_created_at_idx on public.models (created_at de
 alter table public.models enable row level security;
 
 -- No public policies are required. The Next.js server uses the service role key.
+
+-- Keep the default private Storage bucket compatible with both GLB models and
+-- optional model audio. Re-running this file updates an existing `models`
+-- bucket without changing its current file-size limit.
+insert into storage.buckets (
+  id,
+  name,
+  public,
+  allowed_mime_types
+)
+values (
+  'models',
+  'models',
+  false,
+  array[
+    'model/gltf-binary',
+    'application/octet-stream',
+    'audio/mpeg',
+    'audio/mp3',
+    'audio/mp4',
+    'audio/x-m4a',
+    'audio/m4a',
+    'audio/wav',
+    'audio/x-wav',
+    'audio/wave',
+    'audio/ogg',
+    'audio/aac',
+    'audio/x-aac'
+  ]::text[]
+)
+on conflict (id) do update
+set
+  public = excluded.public,
+  allowed_mime_types = excluded.allowed_mime_types;
