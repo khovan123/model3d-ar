@@ -139,7 +139,6 @@ export async function createSupabaseModel(input: {
   storagePath: string;
 }) {
   const extension = getModelExtension(input.storagePath);
-  const isUploadedGlb = extension === "glb";
   const isUploadedUsdz = extension === "usdz";
   const canConvert = canConvertToGlb(input.storagePath);
   const now = new Date().toISOString();
@@ -153,8 +152,11 @@ export async function createSupabaseModel(input: {
     createdAt: now,
     storagePath: input.storagePath,
     storageProvider: "supabase",
-    assetStatus: isUploadedGlb ? "ready" : canConvert ? "pending" : "unsupported",
-    assetStoragePath: isUploadedGlb ? input.storagePath : undefined,
+    // Every supported source, including a self-contained GLB, goes through the
+    // canonical GLB worker. This prevents authoring-unit differences from being
+    // hidden by WebXR normalization while leaking into iPhone Quick Look.
+    assetStatus: canConvert ? "pending" : "unsupported",
+    assetStoragePath: undefined,
     assetAttempts: 0,
     assetUpdatedAt: now,
     usdzStatus: isUploadedUsdz ? "ready" : canConvert ? "pending" : "unsupported",
@@ -209,6 +211,7 @@ export async function updateModelMetadata(
   }
 
   let updated: ModelRecord | undefined;
+
   writeQueue = writeQueue.then(async () => {
     const records = await readRecords();
     const index = records.findIndex((item) => item.id === id);

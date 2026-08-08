@@ -3,6 +3,7 @@ import os
 import sys
 
 import bpy
+from mathutils import Vector
 
 
 def arguments():
@@ -10,9 +11,14 @@ def arguments():
     if "--" not in argv:
         raise RuntimeError("Expected input and output paths after --")
     values = argv[argv.index("--") + 1 :]
-    if len(values) != 2:
-        raise RuntimeError("Usage: blender ... -- source_file output.glb")
-    return os.path.abspath(values[0]), os.path.abspath(values[1])
+    if len(values) not in (2, 3):
+        raise RuntimeError(
+            "Usage: blender ... -- source_file output.glb [target_size_meters]"
+        )
+    target_size = float(values[2]) if len(values) == 3 else 0.8
+    if target_size <= 0:
+        raise ValueError("target_size_meters must be greater than zero")
+    return os.path.abspath(values[0]), os.path.abspath(values[1]), target_size
 
 
 def supported_operator_args(operator, candidates):
@@ -115,8 +121,82 @@ def configure_animations():
     return tracks, strips
 
 
+def scene_mesh_bounds():
+    bpy.context.scene.frame_set(bpy.context.scene.frame_start)
+    bpy.context.view_layer.update()
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+
+    points = []
+    for item in bpy.context.scene.objects:
+        if item.type != "MESH":
+            continue
+        evaluated = item.evaluated_get(depsgraph)
+        points.extend(evaluated.matrix_world @ Vector(corner) for corner in evaluated.bound_box)
+
+    if not points:
+        raise RuntimeError("Imported source does not contain mesh bounds")
+
+    minimum = Vector(
+        (
+            min(point.x for point in points),
+            min(point.y for point in points),
+            min(point.z for point in points),
+        )
+    )
+    maximum = Vector(
+        (
+            max(point.x for point in points),
+            max(point.y for point in points),
+            max(point.z for point in points),
+        )
+    )
+    return minimum, maximum
+
+
+def normalize_model_size(target_size):
+    minimum, maximum = scene_mesh_bounds()
+    size = maximum - minimum
+    largest = max(size.x, size.y, size.z)
+    if largest <= 0:
+        raise RuntimeError("Imported source has empty bounds")
+
+    # Encode one canonical physical scale into the GLB hierarchy itself instead
+    # of relying on Android/WebXR runtime normalization or a later USD-only
+    # transform. This is intentionally a parent transform rather than applying
+    # scale directly to meshes/armatures, because destructive transform baking
+    # can break skins, inverse bind matrices and animation channels.
+    root = bpy.data.objects.new("ModelSpaceCanonicalRoot", None)
+    bpy.context.scene.collection.objects.link(root)
+    top_level = [
+        item
+        for item in bpy.context.scene.objects
+        if item != root and item.parent is None
+    ]
+    for item in top_level:
+        world_matrix = item.matrix_world.copy()
+        item.parent = root
+        item.matrix_world = world_matrix
+
+    scale = target_size / largest
+    center = (minimum + maximum) * 0.5
+    root.scale = (scale, scale, scale)
+
+    # Blender is Z-up. Keep the model centered on X/Y and put its lowest point
+    # on Z=0. The glTF exporter converts this to glTF's Y-up coordinate system.
+    root.location = (-center.x * scale, -center.y * scale, -minimum.z * scale)
+    bpy.context.view_layer.update()
+
+    return {
+        "sourceSize": [size.x, size.y, size.z],
+        "sourceMaxSize": largest,
+        "targetSizeMeters": target_size,
+        "scale": scale,
+        "topLevelObjects": len(top_level),
+    }
+
+
 def main():
-    input_path, output_path = arguments()
+    input_path, output_path, target_size = arguments()
     if not os.path.isfile(input_path):
         raise FileNotFoundError(input_path)
 
@@ -126,7 +206,14 @@ def main():
     if not mesh_objects:
         raise RuntimeError("Imported source does not contain any mesh objects")
 
+    # USD/Quick Look uses real-world units. Make the canonical GLB explicitly
+    # meter based before it becomes the common source for both WebXR and USDZ.
+    bpy.context.scene.unit_settings.system = "METRIC"
+    bpy.context.scene.unit_settings.scale_length = 1.0
+
     nla_tracks, nla_strips = configure_animations()
+    normalization = normalize_model_size(target_size)
+
     export_args = supported_operator_args(
         bpy.ops.export_scene.gltf,
         {
@@ -170,6 +257,7 @@ def main():
                 "actions": len(bpy.data.actions),
                 "nlaTracks": nla_tracks,
                 "nlaStrips": nla_strips,
+                "normalization": normalization,
                 "frameStart": bpy.context.scene.frame_start,
                 "frameEnd": bpy.context.scene.frame_end,
                 "exportOptions": sorted(export_args.keys()),
