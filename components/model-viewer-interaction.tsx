@@ -7,7 +7,8 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 // Keep the existing animation, USDZ and texture compatibility patches active.
 import "./model-viewer-ar";
 import { ModelViewer as BaseModelViewer } from "./model-viewer-fixed";
-import styles from "./model-viewer.module.css";
+import baseStyles from "./model-viewer.module.css";
+import overlayStyles from "./model-info-overlay.module.css";
 
 type Props = {
   modelName: string;
@@ -198,12 +199,12 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
   }, [assetUrl, modelName]);
 
   return (
-    <div className={styles.viewerHost}>
+    <div className={baseStyles.viewerHost}>
       <BaseModelViewer modelName={modelName} description={description} assetUrl={assetUrl} />
 
       <button
         type="button"
-        className={styles.infoTrigger}
+        className={overlayStyles.infoTrigger}
         onClick={() => setInfoOpen(true)}
         aria-label={`Xem thông tin ${modelName}`}
         aria-haspopup="dialog"
@@ -232,19 +233,19 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
         <>
           <button
             type="button"
-            className={styles.infoBackdrop}
+            className={overlayStyles.infoBackdrop}
             aria-label="Đóng thông tin model"
             onClick={() => setInfoOpen(false)}
           />
           <section
-            className={styles.modelInfoCard}
+            className={overlayStyles.modelInfoCard}
             role="dialog"
             aria-modal="true"
             aria-labelledby="model-info-title"
           >
             <button
               type="button"
-              className={styles.infoClose}
+              className={overlayStyles.infoClose}
               onClick={() => setInfoOpen(false)}
               aria-label="Đóng"
             >
@@ -254,7 +255,7 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
             <h2 id="model-info-title">{modelName}</h2>
             <p>{description || "Model này chưa có mô tả."}</p>
             {audioAvailable && (
-              <button type="button" className={styles.audioButton} onClick={() => void toggleAudio()}>
+              <button type="button" className={overlayStyles.audioButton} onClick={() => void toggleAudio()}>
                 <span aria-hidden="true">{audioPlaying ? "❚❚" : "▶"}</span>
                 {audioPlaying ? "Tạm dừng âm thanh" : "Phát âm thanh"}
               </button>
