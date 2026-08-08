@@ -17,6 +17,23 @@ async function resolveAudio(id: string) {
   return createSignedDownload(storagePath, 3600);
 }
 
+async function proxyAudio(signedUrl: string) {
+  const upstream = await fetch(signedUrl, { cache: "no-store" });
+  if (!upstream.ok || !upstream.body) {
+    throw new Error(`Audio upstream returned ${upstream.status}.`);
+  }
+
+  const headers = new Headers();
+  const contentType = upstream.headers.get("content-type");
+  const contentLength = upstream.headers.get("content-length");
+  if (contentType) headers.set("Content-Type", contentType);
+  if (contentLength) headers.set("Content-Length", contentLength);
+  headers.set("Cache-Control", "private, max-age=300");
+  headers.set("Content-Disposition", "inline");
+
+  return new NextResponse(upstream.body, { status: 200, headers });
+}
+
 async function handleGET(request: NextRequest, context: Context) {
   const timer = createRouteTimer();
   const { id } = await context.params;
@@ -25,6 +42,14 @@ async function handleGET(request: NextRequest, context: Context) {
     const signedUrl = await resolveAudio(id);
     if (!signedUrl) {
       const response = NextResponse.json({ message: "Model này chưa có âm thanh." }, { status: 404 });
+      logRoute(request, response.status, timer);
+      return response;
+    }
+
+    // USDZ authoring needs the raw bytes in the browser. Proxy them through the
+    // same origin to avoid relying on the storage provider's CORS policy.
+    if (request.nextUrl.searchParams.get("embed") === "1") {
+      const response = await proxyAudio(signedUrl);
       logRoute(request, response.status, timer);
       return response;
     }
