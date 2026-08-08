@@ -374,7 +374,8 @@ installUSDZTextureCompatibility();
 
 export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
-  const labelRef = useRef<HTMLButtonElement>(null);
+  const labelRef = useRef<HTMLDivElement>(null);
+  const tooltipRef = useRef<HTMLElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
   const pointerStartRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
   const [infoOpen, setInfoOpen] = useState(false);
@@ -401,12 +402,21 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
   }, [audioAvailable]);
 
   const inspectModelAt = useCallback((clientX: number, clientY: number) => {
-    if (!activeModelScene || !activeRenderer || !isHierarchyVisible(activeModelScene)) return;
+    if (!activeModelScene || !activeRenderer || !isHierarchyVisible(activeModelScene)) {
+      setInfoOpen(false);
+      return;
+    }
     const camera = getInteractionCamera();
-    if (!camera) return;
+    if (!camera) {
+      setInfoOpen(false);
+      return;
+    }
 
     const rect = activeRenderer.domElement.getBoundingClientRect();
-    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) return;
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+      setInfoOpen(false);
+      return;
+    }
 
     const pointer = new THREE.Vector2(
       ((clientX - rect.left) / rect.width) * 2 - 1,
@@ -415,7 +425,7 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(pointer, camera);
     const hits = raycaster.intersectObject(activeModelScene, true);
-    if (hits.length > 0) setInfoOpen(true);
+    setInfoOpen(hits.length > 0);
   }, []);
 
   const onPointerDownCapture = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -442,12 +452,14 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
 
     const updateLabel = () => {
       const label = labelRef.current;
+      const tooltip = tooltipRef.current;
       const model = activeModelScene;
       const renderer = activeRenderer;
       const camera = getInteractionCamera();
 
       if (!label || !model || !renderer || !camera || !isHierarchyVisible(model)) {
         if (label) label.style.opacity = "0";
+        if (tooltip) tooltip.style.opacity = "0";
         raf = requestAnimationFrame(updateLabel);
         return;
       }
@@ -458,6 +470,7 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
 
       if (projected.z < -1 || projected.z > 1 || !Number.isFinite(projected.x) || !Number.isFinite(projected.y)) {
         label.style.opacity = "0";
+        if (tooltip) tooltip.style.opacity = "0";
         raf = requestAnimationFrame(updateLabel);
         return;
       }
@@ -467,6 +480,24 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
       const y = rect.top + (-projected.y * 0.5 + 0.5) * rect.height;
       label.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -100%)`;
       label.style.opacity = "1";
+
+      if (tooltip) {
+        const margin = 12;
+        const gap = 14;
+        const tooltipWidth = tooltip.offsetWidth;
+        const tooltipHeight = tooltip.offsetHeight;
+        let tooltipX = x + gap;
+        if (tooltipX + tooltipWidth > window.innerWidth - margin) {
+          tooltipX = x - gap - tooltipWidth;
+        }
+        tooltipX = Math.max(margin, Math.min(tooltipX, window.innerWidth - tooltipWidth - margin));
+        const tooltipY = Math.max(
+          margin,
+          Math.min(y - tooltipHeight / 2, window.innerHeight - tooltipHeight - margin)
+        );
+        tooltip.style.transform = `translate3d(${tooltipX}px, ${tooltipY}px, 0)`;
+        tooltip.style.opacity = "1";
+      }
       raf = requestAnimationFrame(updateLabel);
     };
 
@@ -489,16 +520,13 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
     >
       <BaseModelViewer modelName={modelName} description={description} assetUrl={assetUrl} />
 
-      <button
+      <div
         ref={labelRef}
-        type="button"
         className={styles.modelNameLabel}
-        onClick={() => setInfoOpen(true)}
-        aria-label={`Xem thông tin ${modelName}`}
+        aria-label={`Tên model: ${modelName}`}
       >
         <span>{modelName}</span>
-        <small>Chạm để xem</small>
-      </button>
+      </div>
 
       {audioUrl && (
         <audio
@@ -513,33 +541,28 @@ export function ModelViewer({ modelName, description, assetUrl, audioUrl }: Prop
       )}
 
       {infoOpen && (
-        <>
+        <section
+          ref={tooltipRef}
+          className={styles.modelInfoCard}
+          aria-label={`Mô tả ${modelName}`}
+        >
           <button
             type="button"
-            className={styles.infoBackdrop}
-            aria-label="Đóng thông tin model"
+            className={styles.infoClose}
             onClick={() => setInfoOpen(false)}
-          />
-          <section className={styles.modelInfoCard} aria-label={`Thông tin ${modelName}`}>
-            <button
-              type="button"
-              className={styles.infoClose}
-              onClick={() => setInfoOpen(false)}
-              aria-label="Đóng"
-            >
-              ×
+            aria-label="Đóng"
+          >
+            ×
+          </button>
+          <small>THÔNG TIN</small>
+          <p>{description || "Model này chưa có mô tả."}</p>
+          {audioAvailable && (
+            <button type="button" className={styles.audioButton} onClick={() => void toggleAudio()}>
+              <span aria-hidden="true">{audioPlaying ? "❚❚" : "▶"}</span>
+              {audioPlaying ? "Tạm dừng âm thanh" : "Phát âm thanh"}
             </button>
-            <small>MODEL</small>
-            <h2>{modelName}</h2>
-            <p>{description || "Model này chưa có mô tả."}</p>
-            {audioAvailable && (
-              <button type="button" className={styles.audioButton} onClick={() => void toggleAudio()}>
-                <span aria-hidden="true">{audioPlaying ? "❚❚" : "▶"}</span>
-                {audioPlaying ? "Tạm dừng âm thanh" : "Phát âm thanh"}
-              </button>
-            )}
-          </section>
-        </>
+          )}
+        </section>
       )}
     </div>
   );

@@ -364,11 +364,9 @@
   left: 0;
   top: 0;
   opacity: 0;
-  display: grid;
-  gap: 1px;
   min-width: 88px;
   max-width: min(62vw, 260px);
-  padding: 7px 11px 6px;
+  padding: 7px 11px;
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 10px;
   background: rgba(12, 12, 12, 0.72);
@@ -377,8 +375,7 @@
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  pointer-events: auto;
-  cursor: pointer;
+  pointer-events: none;
   transition: opacity 120ms ease;
 }
 
@@ -404,40 +401,24 @@
   line-height: 1.25;
 }
 
-.modelNameLabel small {
-  color: rgba(255, 255, 255, 0.58);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.infoBackdrop {
-  position: fixed;
-  z-index: 11;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: rgba(0, 0, 0, 0.34);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
-  cursor: default;
-}
-
 .modelInfoCard {
   position: fixed;
-  z-index: 12;
-  left: 50%;
-  bottom: max(18px, calc(env(safe-area-inset-bottom) + 10px));
-  transform: translateX(-50%);
-  width: min(calc(100vw - 28px), 440px);
-  padding: 20px;
-  border-radius: 22px;
+  z-index: 8;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  width: min(calc(100vw - 24px), 300px);
+  max-height: min(52vh, 360px);
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
   background: rgba(20, 20, 20, 0.92);
   color: #fff;
-  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(22px);
-  -webkit-backdrop-filter: blur(22px);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  transition: opacity 120ms ease;
 }
 
 .modelInfoCard > small {
@@ -449,15 +430,8 @@
   letter-spacing: 0.12em;
 }
 
-.modelInfoCard h2 {
-  margin: 0 40px 8px 0;
-  font-size: 22px;
-  line-height: 1.15;
-  letter-spacing: -0.025em;
-}
-
 .modelInfoCard p {
-  margin: 0;
+  margin: 0 30px 0 0;
   color: rgba(255, 255, 255, 0.68);
   font-size: 13px;
   line-height: 1.55;
@@ -466,15 +440,15 @@
 
 .infoClose {
   position: absolute;
-  top: 12px;
-  right: 12px;
-  width: 34px;
-  height: 34px;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
   border: 0;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.1);
   color: #fff;
-  font-size: 22px;
+  font-size: 18px;
   line-height: 1;
   cursor: pointer;
 }
@@ -484,7 +458,7 @@
   min-height: 44px;
   margin-top: 16px;
   border: 0;
-  border-radius: 13px;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -517,7 +491,4 @@
     min-height: 40px;
   }
 
-  .modelInfoCard {
-    bottom: 28px;
-  }
 }
