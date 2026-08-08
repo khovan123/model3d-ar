@@ -11,5 +11,11 @@ export default defineConfig([
       "@typescript-eslint/no-this-alias": "off"
     }
   },
+  {
+    files: ["components/model-viewer-interaction.tsx"],
+    rules: {
+      "prefer-const": "off"
+    }
+  },
   globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", "data/**"])
 ]);
