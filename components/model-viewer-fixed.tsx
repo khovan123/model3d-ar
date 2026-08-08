@@ -53,6 +53,12 @@ type MaterialLike = THREE.Material & {
   vertexColors?: boolean;
 };
 
+const WEBXR_FRAME_COVERAGE = 0.38;
+const WEBXR_FALLBACK_SCALE = 0.28;
+const WEBXR_MIN_INITIAL_SCALE = 0.1;
+const WEBXR_MAX_INITIAL_SCALE = 0.42;
+const QUICK_LOOK_TARGET_MAX_SIZE_METERS = 0.32;
+
 function isAppleMobile() {
   return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
@@ -64,6 +70,34 @@ function distanceBetweenTouches(touches: TouchList) {
     touches[0].clientX - touches[1].clientX,
     touches[0].clientY - touches[1].clientY
   );
+}
+
+function getPrimaryXrCamera(camera: THREE.Camera) {
+  if (camera instanceof THREE.ArrayCamera && camera.cameras.length > 0) {
+    return camera.cameras[0];
+  }
+  return camera;
+}
+
+function fitScaleToXrFrame(camera: THREE.Camera, distance: number, normalizedSize: THREE.Vector3) {
+  const projection = camera.projectionMatrix.elements;
+  const projectionX = Math.abs(projection[0]);
+  const projectionY = Math.abs(projection[5]);
+  if (!Number.isFinite(projectionX) || !Number.isFinite(projectionY) || projectionX <= 0 || projectionY <= 0) {
+    return WEBXR_FALLBACK_SCALE;
+  }
+
+  const safeDistance = Math.max(0.25, distance);
+  const visibleWidth = (2 * safeDistance) / projectionX;
+  const visibleHeight = (2 * safeDistance) / projectionY;
+  const modelWidth = Math.max(normalizedSize.x, 0.05);
+  const modelHeight = Math.max(normalizedSize.y, 0.05);
+  const fitted = Math.min(
+    (visibleWidth * WEBXR_FRAME_COVERAGE) / modelWidth,
+    (visibleHeight * WEBXR_FRAME_COVERAGE) / modelHeight
+  );
+
+  return THREE.MathUtils.clamp(fitted, WEBXR_MIN_INITIAL_SCALE, WEBXR_MAX_INITIAL_SCALE);
 }
 
 function normalizeTexture(texture: THREE.Texture | null | undefined, colorTexture = false) {
@@ -119,13 +153,16 @@ function createUSDZMaterial(source: THREE.Material) {
 }
 
 function buildUSDZExportRoot(sourceRoot: THREE.Group) {
-  const exportRoot = sourceRoot.clone(true);
+  const modelClone = sourceRoot.clone(true);
+  const exportRoot = new THREE.Group();
   const ownedMaterials: THREE.Material[] = [];
 
-  exportRoot.visible = true;
-  exportRoot.position.set(0, 0, 0);
-  exportRoot.rotation.set(0, 0, 0);
-  exportRoot.scale.setScalar(1);
+  modelClone.visible = true;
+  modelClone.position.set(0, 0, 0);
+  modelClone.rotation.set(0, 0, 0);
+  modelClone.scale.setScalar(QUICK_LOOK_TARGET_MAX_SIZE_METERS);
+  exportRoot.name = "__modelspace_quicklook_root__";
+  exportRoot.add(modelClone);
 
   exportRoot.traverse((object) => {
     object.visible = true;
@@ -166,7 +203,8 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
   const placedRef = useRef(false);
   const trackingReadyRef = useRef(false);
   const repositioningRef = useRef(false);
-  const placementScaleRef = useRef(0.45);
+  const placementScaleRef = useRef(WEBXR_FALLBACK_SCALE);
+  const normalizedModelSizeRef = useRef(new THREE.Vector3(1, 1, 1));
 
   const [mode, setMode] = useState<ViewerMode>("ar");
   const [arEngine, setArEngine] = useState<ArEngine>("checking");
@@ -223,7 +261,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
     placedRef.current = false;
     trackingReadyRef.current = false;
     repositioningRef.current = false;
-    placementScaleRef.current = 0.45;
+    placementScaleRef.current = WEBXR_FALLBACK_SCALE;
     setPlaced(false);
     setTrackingReady(false);
     setRepositioning(false);
@@ -503,7 +541,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
           return;
         }
         const nextDistance = distanceBetweenTouches(event.touches);
-        const nextScale = THREE.MathUtils.clamp(gestureStartScale * (nextDistance / gestureStartDistance), 0.12, 1.8);
+        const nextScale = THREE.MathUtils.clamp(gestureStartScale * (nextDistance / gestureStartDistance), 0.08, 1.8);
         placementScaleRef.current = nextScale;
         root.scale.setScalar(nextScale);
         return;
@@ -643,10 +681,15 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
         const normalizingScale = 1 / largest;
         object.position.set(-center.x, -box.min.y, -center.z);
         object.scale.setScalar(normalizingScale);
+        normalizedModelSizeRef.current.set(
+          size.x * normalizingScale,
+          size.y * normalizingScale,
+          size.z * normalizingScale
+        );
         root.add(object);
         root.updateMatrixWorld(true);
 
-        const normalizedHeight = size.y * normalizingScale;
+        const normalizedHeight = normalizedModelSizeRef.current.y;
         controls.target.set(0, Math.min(0.46, Math.max(0.18, normalizedHeight * 0.48)), 0);
         camera.position.set(1.45, Math.max(0.7, normalizedHeight * 0.78), 2.6);
         controls.update();
@@ -682,12 +725,25 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
               reticle.matrix.fromArray(pose.transform.matrix);
               reticle.matrix.decompose(tempPosition, tempQuaternion, tempScale);
               latestSurfacePosition.copy(tempPosition);
-              if (!trackingReadyRef.current) {
+              const firstTrackingFrame = !trackingReadyRef.current;
+              if (firstTrackingFrame) {
                 trackingReadyRef.current = true;
                 setTrackingReady(true);
               }
 
               if (!placedRef.current) {
+                const xrCamera = getPrimaryXrCamera(renderer.xr.getCamera());
+                xrCamera.getWorldPosition(cameraPosition);
+                const distanceToHit = cameraPosition.distanceTo(tempPosition);
+                const fittedScale = fitScaleToXrFrame(
+                  xrCamera,
+                  distanceToHit,
+                  normalizedModelSizeRef.current
+                );
+                placementScaleRef.current = firstTrackingFrame
+                  ? fittedScale
+                  : THREE.MathUtils.lerp(placementScaleRef.current, fittedScale, 0.18);
+
                 reticle.visible = true;
                 root.visible = modelReadyRef.current;
                 root.position.lerp(tempPosition, 0.38);
@@ -814,7 +870,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
             {arEngine === "quicklook"
               ? "Model và texture đã được chuẩn hóa sang USDZ để mở bằng AR Quick Look."
               : arEngine === "webxr"
-                ? "Model sẽ bám theo điểm ngắm. Chạm để đặt, giữ-kéo để di chuyển, vuốt để xoay và chụm để đổi kích thước."
+                ? "Model sẽ tự căn theo khung hình. Chạm để đặt, giữ-kéo để di chuyển, vuốt để xoay và chụm để đổi kích thước."
                 : arEngine === "quicklook-preparing"
                   ? "Đang chuyển geometry, material và texture sang USDZ cho iPhone."
                   : arEngine === "unsupported"
@@ -839,7 +895,7 @@ export function ModelViewer({ modelName, description, assetUrl }: Props) {
             <span className={styles.phone} />
           </div>
           <strong>{trackingReady ? "Chạm để đặt model" : "Di chuyển điện thoại để tìm mặt phẳng"}</strong>
-          <span>{trackingReady ? "Model đang bám theo điểm ngắm." : "Hướng camera xuống sàn hoặc mặt bàn."}</span>
+          <span>{trackingReady ? "Model đang tự căn kích thước theo khung hình." : "Hướng camera xuống sàn hoặc mặt bàn."}</span>
         </div>
       )}
 
