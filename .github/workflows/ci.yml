@@ -14,5 +14,7 @@ jobs:
         with:
           node-version: 22
       - run: npm install
+      - run: node --check scripts/usdz-worker.mjs
+      - run: python -m py_compile scripts/blender/source_to_glb.py scripts/blender/glb_to_usd.py
       - run: npm run lint
       - run: npm run build
