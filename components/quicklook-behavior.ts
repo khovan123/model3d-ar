@@ -8,6 +8,7 @@ import {
 
 const PLAQUE_NAME = "__modelspace_quicklook_plaque__";
 const AUDIO_BUTTON_NAME = "__modelspace_quicklook_audio_button__";
+const INIT_BEHAVIOR_NAME = "ModelSpaceInitInfo";
 const BEHAVIOR_NAME = "ModelSpaceTapInfo";
 const HIDE_BEHAVIOR_NAME = "ModelSpaceHideInfo";
 const REPLAY_AUDIO_BEHAVIOR_NAME = "ModelSpaceReplayAudio";
@@ -105,20 +106,13 @@ function injectAudioButton(usda: string) {
 
   const lines = usda.split("\n");
   const plaqueIndex = lines.findIndex((line) =>
-    new RegExp(`^(\\t*)def\\s+\\w+\\s+"${AUDIO_BUTTON_NAME.replace("audio_button", "quicklook_plaque")}"`).test(line)
-  );
-
-  // Prefer an exact lookup because the generated plaque name is stable.
-  const exactPlaqueIndex = lines.findIndex((line) =>
     line.includes(`def Xform "${PLAQUE_NAME}"`) || line.includes(`def "${PLAQUE_NAME}"`)
   );
-  const startIndex = exactPlaqueIndex >= 0 ? exactPlaqueIndex : plaqueIndex;
-  if (startIndex < 0) return usda;
+  if (plaqueIndex < 0) return usda;
 
-  const indentMatch = lines[startIndex].match(/^(\t*)/);
-  const plaqueIndent = indentMatch?.[1] ?? "";
+  const plaqueIndent = lines[plaqueIndex].match(/^(\t*)/)?.[1] ?? "";
   let plaqueCloseIndex = -1;
-  for (let index = startIndex + 1; index < lines.length; index += 1) {
+  for (let index = plaqueIndex + 1; index < lines.length; index += 1) {
     if (lines[index] === `${plaqueIndent}}`) {
       plaqueCloseIndex = index;
       break;
@@ -161,12 +155,28 @@ ${i1}}`;
   return lines.join("\n");
 }
 
+function visibilityActionBlock(
+  name: string,
+  operation: "show" | "hide",
+  targetPath: string,
+  indent: string,
+  motionType: "none" | "pop" = "pop",
+  duration = 0.18
+) {
+  const child = `${indent}\t`;
+  return `${indent}def Preliminary_Action "${name}" ( inherits = </VisibilityAction> )
+${indent}{
+${child}uniform token info:id = "${operation}"
+${child}uniform token motionType = "${motionType}"
+${child}uniform double duration = ${duration}
+${child}rel affectedObjects = [ <${targetPath}> ]
+${indent}}`;
+}
+
 function audioActionBlock(name: string, audioFileName: string, modelRootPath: string, indent: string) {
   const child = `${indent}\t`;
-  return `${indent}def Preliminary_Action "${name}"
+  return `${indent}def Preliminary_Action "${name}" ( inherits = </AudioAction> )
 ${indent}{
-${child}uniform token info:id = "Audio"
-${child}uniform token type = "play"
 ${child}uniform asset audio = @${audioFileName}@
 ${child}uniform double gain = 1
 ${child}rel affectedObjects = [ <${modelRootPath}> ]
@@ -218,88 +228,86 @@ function buildBehaviorBlock(prims: UsdPrim[], audioFileName?: string) {
   const i3 = "\t\t\t";
   const i4 = `${i3}\t`;
   const i5 = `${i4}\t`;
-  const modelActions = audioFileName
+
+  // Quick Look's VisibilityAction is a runtime transform effect and is distinct
+  // from UsdGeomImageable visibility. Hide the plaque after the scene loads so
+  // a later VisibilityAction can reveal it again on tap.
+  const initBehavior = `${i3}def Preliminary_Behavior "${INIT_BEHAVIOR_NAME}"
+${i3}{
+${i4}rel triggers = [ <SceneStart> ]
+${i4}rel actions = [ <HideInfoOnStart> ]
+
+${i4}def Preliminary_Trigger "SceneStart" ( inherits = </SceneTransitionTrigger> )
+${i4}{
+${i4}}
+
+${visibilityActionBlock("HideInfoOnStart", "hide", plaque.path, i4, "none", 0.000001)}
+${i3}}`;
+
+  const entryActions = audioFileName
     ? "[ <Feedback>, <ShowInfo>, <PlayAudio> ]"
     : "[ <Feedback>, <ShowInfo> ]";
   const modelAudioAction = audioFileName
     ? `\n${audioActionBlock("PlayAudio", audioFileName, modelRoot.path, i4)}\n`
     : "";
 
-  const replayBehavior = audioFileName && audioButton && audioTapTargets.length > 0
-    ? `
-${i3}def Preliminary_Behavior "${REPLAY_AUDIO_BEHAVIOR_NAME}"
-${i3}{
-${i4}rel triggers = [ <TapAudio> ]
-${i4}rel actions = [ <ReplayAudio>, <AudioFeedback> ]
-
-${i4}def Preliminary_Trigger "TapAudio"
-${i4}{
-${i5}uniform token info:id = "tap"
-${i5}rel affectedObjects = ${usdTargets(audioTapTargets, `${i5}\t`)}
-${i4}}
-
-${audioActionBlock("ReplayAudio", audioFileName, modelRoot.path, i4)}
-
-${i4}def Preliminary_Action "AudioFeedback"
-${i4}{
-${i5}uniform token info:id = "emphasize"
-${i5}uniform token motionType = "pulse"
-${i5}rel affectedObjects = [ <${audioButton.path}> ]
-${i4}}
-${i3}}
-`
-    : "";
-
-  const block = `${i3}def Preliminary_Behavior "${BEHAVIOR_NAME}"
+  const tapBehavior = `${i3}def Preliminary_Behavior "${BEHAVIOR_NAME}"
 ${i3}{
 ${i4}rel triggers = [ <TapModel> ]
-${i4}rel actions = ${modelActions}
+${i4}rel actions = [ <Entry> ]
 
-${i4}def Preliminary_Trigger "TapModel"
+${i4}def Preliminary_Trigger "TapModel" ( inherits = </TapGestureTrigger> )
 ${i4}{
-${i5}uniform token info:id = "tap"
 ${i5}rel affectedObjects = ${usdTargets(modelTapTargets, `${i5}\t`)}
 ${i4}}
 
-${i4}def Preliminary_Action "Feedback"
+${i4}def Preliminary_Action "Entry" ( inherits = </GroupAction> )
 ${i4}{
-${i5}uniform token info:id = "emphasize"
+${i5}uniform token type = "parallel"
+${i5}rel actions = ${entryActions}
+${i4}}
+
+${i4}def Preliminary_Action "Feedback" ( inherits = </EmphasizeAction> )
+${i4}{
 ${i5}uniform token motionType = "bounce"
 ${i5}rel affectedObjects = [ <${modelRoot.path}> ]
 ${i4}}
 
-${i4}def Preliminary_Action "ShowInfo"
-${i4}{
-${i5}uniform token info:id = "visibility"
-${i5}uniform token type = "show"
-${i5}uniform double duration = 0.18
-${i5}rel affectedObjects = [ <${plaque.path}> ]
-${i4}}
-${modelAudioAction}${i3}}
+${visibilityActionBlock("ShowInfo", "show", plaque.path, i4, "pop", 0.18)}
+${modelAudioAction}${i3}}`;
 
-${i3}def Preliminary_Behavior "${HIDE_BEHAVIOR_NAME}"
+  const hideBehavior = `${i3}def Preliminary_Behavior "${HIDE_BEHAVIOR_NAME}"
 ${i3}{
 ${i4}rel triggers = [ <TapInfo> ]
 ${i4}rel actions = [ <HideInfo> ]
 
-${i4}def Preliminary_Trigger "TapInfo"
+${i4}def Preliminary_Trigger "TapInfo" ( inherits = </TapGestureTrigger> )
 ${i4}{
-${i5}uniform token info:id = "tap"
 ${i5}rel affectedObjects = ${usdTargets(plaqueTapTargets, `${i5}\t`)}
 ${i4}}
 
-${i4}def Preliminary_Action "HideInfo"
+${visibilityActionBlock("HideInfo", "hide", plaque.path, i4, "pop", 0.18)}
+${i3}}`;
+
+  const replayBehavior = audioFileName && audioButton && audioTapTargets.length > 0
+    ? `${i3}def Preliminary_Behavior "${REPLAY_AUDIO_BEHAVIOR_NAME}"
+${i3}{
+${i4}rel triggers = [ <TapAudio> ]
+${i4}rel actions = [ <ReplayAudio> ]
+
+${i4}def Preliminary_Trigger "TapAudio" ( inherits = </TapGestureTrigger> )
 ${i4}{
-${i5}uniform token info:id = "visibility"
-${i5}uniform token type = "hide"
-${i5}uniform double duration = 0.18
-${i5}rel affectedObjects = [ <${plaque.path}> ]
+${i5}rel affectedObjects = ${usdTargets(audioTapTargets, `${i5}\t`)}
 ${i4}}
-${i3}}
-${replayBehavior}`;
+
+${audioActionBlock("ReplayAudio", audioFileName, modelRoot.path, i4)}
+${i3}}`
+    : "";
 
   return {
-    block,
+    block: [initBehavior, tapBehavior, hideBehavior, replayBehavior]
+      .filter(Boolean)
+      .join("\n\n"),
     modelTapTargetCount: modelTapTargets.length,
     plaquePath: plaque.path,
     hasAudio: Boolean(audioFileName),
@@ -329,7 +337,7 @@ function injectIntoScene(usda: string, audioFileName?: string) {
 
   lines.splice(sceneCloseIndex, 0, "", ...behavior.block.trimEnd().split("\n"), "");
   console.info(
-    `[ModelSpace] Quick Look native behavior authored for ${behavior.modelTapTargetCount} model mesh target(s); plaque ${behavior.plaquePath}; audio=${behavior.hasAudio ? `yes (${behavior.audioTapTargetCount} replay target(s))` : "no"}.`
+    `[ModelSpace] Quick Look typed behavior authored for ${behavior.modelTapTargetCount} model mesh target(s); plaque ${behavior.plaquePath}; audio=${behavior.hasAudio ? `yes (${behavior.audioTapTargetCount} replay target(s))` : "no"}.`
   );
   return lines.join("\n");
 }
@@ -390,10 +398,7 @@ export function installQuickLookTapBehaviorPatch() {
   prototype.__modelSpaceNativeBehaviorPatch = true;
 
   const originalParseAsync = USDZExporter.prototype.parseAsync;
-  USDZExporter.prototype.parseAsync = async function (
-    scene,
-    options
-  ) {
+  USDZExporter.prototype.parseAsync = async function (scene, options) {
     const output = await originalParseAsync.call(this, scene, options);
     return authorNativeBehavior(output);
   };
