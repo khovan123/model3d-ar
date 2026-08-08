@@ -16,7 +16,7 @@ type ModelRow = {
   mime_type: string;
   size: number;
   created_at: string;
-  usdz_status: "pending" | "processing" | "ready" | "failed";
+  usdz_status: "pending" | "processing" | "ready" | "failed" | "skipped";
   usdz_storage_path: string | null;
   usdz_error: string | null;
   usdz_attempts: number;

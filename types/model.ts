@@ -1,4 +1,10 @@
-export type UsdzStatus = "pending" | "processing" | "ready" | "failed" | "unavailable";
+export type UsdzStatus =
+  | "pending"
+  | "processing"
+  | "ready"
+  | "failed"
+  | "skipped"
+  | "unavailable";
 
 export type ModelRecord = {
   id: string;

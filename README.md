@@ -77,9 +77,11 @@ Luồng upload gồm ba bước: frontend xin signed upload URL từ Next.js, `P
 ## Pipeline USDZ animation
 
 Sau khi metadata được tạo, model Supabase có trạng thái `usdz_status=pending`.
-Worker PM2 tải GLB, dùng Blender headless xuất USD animation, đóng gói bằng
-`usdzip`, audit skeleton rồi upload vào `usdz/{modelId}.usdz`. Studio tự cập
-nhật trạng thái và cho phép chạy lại job thất bại.
+Worker đọc JSON chunk của GLB trước; model không có animation được đánh dấu
+`skipped` và không tạo USDZ. Với model có animation, worker dùng Blender headless
+xuất USD animation, đóng gói bằng `usdzip`, audit skeleton rồi upload vào
+`usdz/{modelId}.usdz`. Studio tự cập nhật trạng thái và cho phép chạy lại job
+thất bại.
 
 ```bash
 npm run worker:usdz:check

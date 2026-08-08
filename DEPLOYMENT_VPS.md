@@ -13,16 +13,134 @@ Tài liệu này ghi đúng quy trình hiện tại của dự án khi chạy tr
 ## Cài công cụ chuyển đổi USDZ
 
 Animation trên iPhone Quick Look dùng worker riêng để chuyển GLB thành USDZ. VPS
-cần có Blender CLI và bộ OpenUSD chứa `usdzip`; tên package phụ thuộc phiên bản
-Ubuntu nên hãy xác nhận bằng lệnh thực tế sau khi cài:
+cần có Blender CLI và bộ OpenUSD chứa `usdzip`/`usdcat`.
+
+Trên Ubuntu, kiểm tra trước xem distribution có package `usd-core` hay không:
 
 ```bash
-blender --version
-usdzip --version
-usdcat --version
+sudo apt update
+sudo apt install -y software-properties-common
+sudo add-apt-repository -y universe
+sudo apt update
+apt-cache policy usd-core
 ```
 
+Ubuntu 24.04 Noble hiện không cung cấp `usd-core`. Với Noble, build bản core của
+OpenUSD từ source; tắt imaging, usdview và tài liệu để giảm thời gian/RAM:
+
+```bash
+sudo apt install -y \
+  build-essential \
+  cmake \
+  ninja-build \
+  git \
+  python3 \
+  python3-dev \
+  libboost-all-dev \
+  libtbb-dev
+
+cd /tmp
+git clone --depth 1 --branch v25.05 \
+  https://github.com/PixarAnimationStudios/OpenUSD.git
+
+sudo mkdir -p /opt/openusd
+sudo chown "$USER":"$USER" /opt/openusd
+
+python3 OpenUSD/build_scripts/build_usd.py \
+  --jobs 2 \
+  --no-tests \
+  --no-examples \
+  --no-tutorials \
+  --no-docs \
+  --no-usdview \
+  --no-imaging \
+  --no-materialx \
+  /opt/openusd
+```
+
+Đăng ký thư viện và kiểm tra các tool vừa build:
+
+```bash
+echo '/opt/openusd/lib' | sudo tee /etc/ld.so.conf.d/openusd.conf
+sudo ldconfig
+
+/opt/openusd/bin/usdzip --help
+PYTHONPATH=/opt/openusd/lib/python /opt/openusd/bin/usdcat --help
+```
+
+Nếu VPS ít hơn 4 GB RAM, giảm thành `--jobs 1` để tránh quá bộ nhớ trong lúc
+compile. `--no-materialx` là cần thiết cho worker core-only và tránh kéo theo bộ
+X11 development chỉ dùng cho MaterialX renderer.
+
+Nên cài Blender bản mới qua Snap. Blender trong repository `apt` của một số bản
+Ubuntu khá cũ và có thể chưa export đầy đủ armature animation sang USD:
+
+```bash
+sudo apt install -y \
+  snapd \
+  libxrender1 \
+  libxi6 \
+  libxfixes3 \
+  libxkbcommon0 \
+  libsm6 \
+  libice6 \
+  libgl1 \
+  libegl1
+sudo snap install blender --classic
+sudo snap refresh blender
+```
+
+Sau khi cài, xác nhận đường dẫn và phiên bản:
+
+```bash
+command -v blender
+command -v usdzip
+command -v usdcat
+
+/snap/bin/blender --version
+usdzip --help
+usdcat --help
+```
+
+Kiểm tra Blender ở chế độ headless, đây mới là chế độ worker thực sự sử dụng:
+
+```bash
+/snap/bin/blender --background --factory-startup \
+  --python-expr "import bpy; print('BLENDER_HEADLESS_OK', bpy.app.version_string)"
+```
+
+Nếu distribution khác có package `usd-core`, có thể cài và kiểm tra bằng:
+
+```bash
+apt-cache policy usd-core
+sudo apt install -y usd-core
+dpkg -L usd-core 2>/dev/null | grep -E '/(usdzip|usdcat)$' || true
+```
+
+Chỉ đặt `USDZIP_BIN=/usr/bin/usdzip` và `USDCAT_BIN=/usr/bin/usdcat` sau khi
+`command -v` xác nhận hai đường dẫn này thực sự tồn tại.
+
 `usdcat` là tùy chọn nhưng nên có để worker kiểm tra `SkelRoot`/`SkelAnimation`.
+Với Ubuntu 24.04 và OpenUSD được build trong `/opt/openusd`, cấu hình `.env.local`:
+
+```env
+BLENDER_BIN=/snap/bin/blender
+USDZIP_BIN=/opt/openusd/bin/usdzip
+USDCAT_BIN=/opt/openusd/bin/usdcat
+PYTHONPATH=/opt/openusd/lib/python
+LD_LIBRARY_PATH=/opt/openusd/lib
+```
+
+Nếu VPS không dùng được Snap, có thể cài Blender từ `apt`:
+
+```bash
+sudo apt install -y blender
+blender --version
+```
+
+Tuy nhiên chỉ nên dùng cách này khi phiên bản Blender đủ mới và
+`npm run worker:usdz:check` báo thành công.
+
 Không deploy code ứng dụng trước khi chạy migration, vì bản code mới đọc các cột
 `usdz_*` ngay khi lấy danh sách model.
 

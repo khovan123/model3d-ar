@@ -9,7 +9,7 @@ create table if not exists public.models (
   mime_type text not null default 'model/gltf-binary',
   size bigint not null check (size > 0),
   created_at timestamptz not null default now(),
-  usdz_status text not null default 'pending' check (usdz_status in ('pending', 'processing', 'ready', 'failed')),
+  usdz_status text not null default 'pending' check (usdz_status in ('pending', 'processing', 'ready', 'failed', 'skipped')),
   usdz_storage_path text,
   usdz_error text,
   usdz_attempts integer not null default 0 check (usdz_attempts >= 0),
@@ -22,19 +22,13 @@ alter table public.models add column if not exists usdz_error text;
 alter table public.models add column if not exists usdz_attempts integer not null default 0;
 alter table public.models add column if not exists usdz_updated_at timestamptz not null default now();
 
+alter table public.models drop constraint if exists models_usdz_status_check;
+alter table public.models
+  add constraint models_usdz_status_check
+  check (usdz_status in ('pending', 'processing', 'ready', 'failed', 'skipped'));
+
 do $$
 begin
-  if not exists (
-    select 1
-    from pg_constraint
-    where conname = 'models_usdz_status_check'
-      and conrelid = 'public.models'::regclass
-  ) then
-    alter table public.models
-      add constraint models_usdz_status_check
-      check (usdz_status in ('pending', 'processing', 'ready', 'failed'));
-  end if;
-
   if not exists (
     select 1
     from pg_constraint

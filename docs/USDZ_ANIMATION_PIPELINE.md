@@ -33,6 +33,9 @@ Supabase DB: usdz_status=pending
 PM2 worker claim job
       |
       +--> download GLB vao thu muc tam
+      +--> inspect GLB JSON chunk
+      |      +--> no animation: usdz_status=skipped, stop
+      |
       +--> Blender headless: GLB -> USDC + textures
       +--> usdzip: USDC package -> USDZ
       +--> audit USDZ (SkelRoot/Skeleton/SkelAnimation)
@@ -51,6 +54,7 @@ iPhone viewer dung /api/models/{id}/usdz
 | `processing` | Worker da claim va dang convert |
 | `ready` | USDZ da upload thanh cong |
 | `failed` | Conversion that bai; `usdz_error` co chi tiet |
+| `skipped` | GLB khong co animation channel, khong can tao USDZ san |
 
 `usdz_attempts` tang moi lan worker claim. Loi tam thoi duoc dua lai `pending`
 cho den khi dat `USDZ_MAX_ATTEMPTS`; lan loi cuoi cung chuyen sang `failed`. Job
@@ -80,6 +84,10 @@ audio/{id}
 
 Worker nam tai `scripts/usdz-worker.mjs` va Blender script nam tai
 `scripts/blender/glb_to_usd.py`.
+
+Truoc khi goi Blender, worker doc JSON chunk cua GLB va dem `animations[].channels`.
+Neu khong co channel, job chuyen sang `skipped`; Blender, `usdzip` va upload USDZ
+deu khong chay cho model do.
 
 Worker chi chay mot job tai mot thoi diem. Chay mot lan:
 
@@ -117,7 +125,7 @@ SUPABASE_STORAGE_BUCKET
 ## Fallback viewer
 
 1. `usdz_status=ready`: iPhone mo file USDZ da tao san.
-2. `pending/processing/failed`: iPhone dung Three.js USDZ exporter hien tai.
+2. `pending/processing/failed/skipped`: iPhone dung Three.js USDZ exporter hien tai.
 3. Web viewer va Android WebXR luon dung GLB, khong phu thuoc worker.
 
 Fallback dam bao worker loi khong lam viewer GLB ngung hoat dong. Tuy nhien USDZ
@@ -180,7 +188,8 @@ pm2 restart model3d-usdz-worker --update-env
 ## Tieu chi hoan thanh
 
 - Upload GLB tao record `pending`.
-- Worker claim job, convert, audit, upload va chuyen sang `ready`.
+- Model khong co animation chuyen sang `skipped` ma khong goi Blender.
+- Model co animation duoc convert, audit, upload va chuyen sang `ready`.
 - API USDZ chi tra file khi record `ready`.
 - iPhone uu tien USDZ da tao san; fallback van hoat dong.
 - Xoa model cung xoa `usdz/{id}.usdz`.

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { inspectGlbAnimations } from "./glb-inspector.mjs";
 
 const args = new Set(process.argv.slice(2));
 const once = args.has("--once");
@@ -192,9 +193,9 @@ async function updateJob(id, values) {
   });
 }
 
-async function commandExists(command) {
+async function commandExists(command, commandArgs = ["--version"]) {
   return new Promise((resolve) => {
-    const child = spawn(command, ["--version"], { stdio: "ignore" });
+    const child = spawn(command, commandArgs, { stdio: "ignore" });
     child.once("error", () => resolve(false));
     child.once("exit", (code) => resolve(code === 0));
   });
@@ -236,7 +237,7 @@ async function auditUsdz(usdzPath, rootLayerPath) {
     throw new Error("USDZ archive does not contain the exported root layer.");
   }
 
-  if (!(await commandExists(usdcatBin))) {
+  if (!(await commandExists(usdcatBin, ["--help"]))) {
     return { skeletonAudit: "skipped", archiveFiles: listing.stdout.trim().split(/\r?\n/).length };
   }
 
@@ -260,6 +261,21 @@ async function convertJob(job) {
 
   try {
     await downloadStorageObject(job.storage_path, inputPath);
+    const glb = await inspectGlbAnimations(inputPath);
+    if (!glb.hasAnimations) {
+      await updateJob(job.id, {
+        usdz_status: "skipped",
+        usdz_storage_path: null,
+        usdz_error: null
+      });
+      log("info", "Skipped USDZ conversion because the GLB has no animation channels.", {
+        modelId: job.id,
+        name: job.name,
+        glb
+      });
+      return;
+    }
+
     const blenderResult = await runCommand(blenderBin, [
       "--background",
       "--factory-startup",
@@ -295,6 +311,7 @@ async function convertJob(job) {
       name: job.name,
       bytes: outputStat.size,
       storagePath,
+      glb,
       audit,
       blender: blenderReport(blenderResult.stdout)
     });
@@ -342,12 +359,12 @@ async function checkEnvironment() {
   await access(blenderScript);
   const [hasBlender, hasUsdzip] = await Promise.all([
     commandExists(blenderBin),
-    commandExists(usdzipBin)
+    commandExists(usdzipBin, ["--help"])
   ]);
   const result = {
     blender: hasBlender ? "ok" : "missing",
     usdzip: hasUsdzip ? "ok" : "missing",
-    usdcat: await commandExists(usdcatBin) ? "ok" : "optional-missing",
+    usdcat: await commandExists(usdcatBin, ["--help"]) ? "ok" : "optional-missing",
     bucket,
     workRoot,
     targetSizeMeters

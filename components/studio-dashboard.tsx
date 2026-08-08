@@ -40,6 +40,7 @@ const USDZ_STATUS_LABELS: Record<PublicModel["usdzStatus"], string> = {
   processing: "Đang chuyển đổi",
   ready: "USDZ sẵn sàng",
   failed: "Chuyển đổi lỗi",
+  skipped: "Không có animation",
   unavailable: "Không hỗ trợ tự động"
 };
 
