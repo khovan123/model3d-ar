@@ -22,13 +22,19 @@ export function ModelSpaceDebugPanel() {
 
   useEffect(() => {
     const debugEnabled = new URLSearchParams(window.location.search).get("debug") === "1";
-    setEnabled(debugEnabled);
     if (!debugEnabled) return;
 
     const refresh = () => setLogs(getModelSpaceDebugLogs());
-    refresh();
+    const initialize = window.setTimeout(() => {
+      setEnabled(true);
+      refresh();
+    }, 0);
+
     window.addEventListener(MODELSPACE_DEBUG_EVENT, refresh);
-    return () => window.removeEventListener(MODELSPACE_DEBUG_EVENT, refresh);
+    return () => {
+      window.clearTimeout(initialize);
+      window.removeEventListener(MODELSPACE_DEBUG_EVENT, refresh);
+    };
   }, []);
 
   const visibleLogs = useMemo(() => logs.slice(-140), [logs]);
