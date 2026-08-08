@@ -16,10 +16,11 @@ type TextureSlot =
   | "clearcoatMap"
   | "clearcoatRoughnessMap";
 
-type AnimationPatchState = {
+type AnimationState = {
   mixer: THREE.AnimationMixer;
   root: THREE.Object3D;
   clips: THREE.AnimationClip[];
+  sourceId: string;
 };
 
 const TEXTURE_SLOTS: TextureSlot[] = [
@@ -34,8 +35,11 @@ const TEXTURE_SLOTS: TextureSlot[] = [
   "clearcoatRoughnessMap"
 ];
 
-let activeAnimationState: AnimationPatchState | null = null;
-let activeAnimationClips: THREE.AnimationClip[] = [];
+const MAX_TRACKED_ANIMATION_STATES = 8;
+const ANIMATION_SOURCE_KEY = "modelSpaceAnimationSourceId";
+const animationStates: AnimationState[] = [];
+const animationClipsBySourceId = new Map<string, THREE.AnimationClip[]>();
+let animationSourceSequence = 0;
 
 function animationTrackKey(track: THREE.KeyframeTrack) {
   try {
@@ -81,13 +85,9 @@ function choosePrimaryClip(clips: THREE.AnimationClip[]) {
 }
 
 /**
- * GLB exporters do not always store one logical animation as one clip. Blender,
- * Maya and conversion pipelines can emit one clip per animated object/bone.
- * Playing only a "main" clip therefore makes otherwise animated models appear
- * static. We keep the preferred clip, then add every clip whose target channels
- * do not conflict with channels already selected. Distinct part clips run in
- * parallel; alternate actions that animate the same property are not blended
- * on top of each other.
+ * Some GLB exporters split one logical animation across many clips. Keep a
+ * preferred clip and add every non-conflicting clip so separate bones/parts
+ * still animate together without blending alternate actions over each other.
  */
 function choosePlaybackClips(sourceClips: THREE.AnimationClip[]) {
   const clips = sourceClips.filter((clip) => {
@@ -105,33 +105,37 @@ function choosePlaybackClips(sourceClips: THREE.AnimationClip[]) {
   for (const clip of clips) {
     if (clip === primary) continue;
     const keys = clip.tracks.map(animationTrackKey);
-    const conflicts = keys.some((key) => occupiedChannels.has(key));
-    if (conflicts) continue;
+    if (keys.some((key) => occupiedChannels.has(key))) continue;
 
     selected.push(clip);
     keys.forEach((key) => occupiedChannels.add(key));
   }
 
-  // Preserve file order for deterministic playback/export while keeping only
-  // the compatible set selected above.
   const selectedSet = new Set(selected);
   return clips.filter((clip) => selectedSet.has(clip));
 }
 
-function stopActiveAnimation() {
-  const state = activeAnimationState;
-  if (state) {
-    state.mixer.stopAllAction();
-    state.mixer.uncacheRoot(state.root);
+function disposeAnimationState(state: AnimationState) {
+  state.mixer.stopAllAction();
+  state.mixer.uncacheRoot(state.root);
+  if (animationClipsBySourceId.get(state.sourceId) === state.clips) {
+    animationClipsBySourceId.delete(state.sourceId);
   }
-  activeAnimationState = null;
-  activeAnimationClips = [];
+}
+
+function pruneAnimationStates() {
+  while (animationStates.length > MAX_TRACKED_ANIMATION_STATES) {
+    const stale = animationStates.shift();
+    if (stale) disposeAnimationState(stale);
+  }
 }
 
 function startAnimationSet(root: THREE.Object3D, sourceClips: THREE.AnimationClip[]) {
-  stopActiveAnimation();
-
   const clips = choosePlaybackClips(sourceClips);
+  const sourceId = `modelspace-animation-${++animationSourceSequence}`;
+  root.userData[ANIMATION_SOURCE_KEY] = sourceId;
+  animationClipsBySourceId.set(sourceId, clips);
+
   if (clips.length === 0) {
     root.userData.modelSpaceAnimation = {
       animated: false,
@@ -154,8 +158,9 @@ function startAnimationSet(root: THREE.Object3D, sourceClips: THREE.AnimationCli
   }
   mixer.setTime(0);
 
-  activeAnimationState = { mixer, root, clips };
-  activeAnimationClips = clips;
+  const state: AnimationState = { mixer, root, clips, sourceId };
+  animationStates.push(state);
+  pruneAnimationStates();
 
   const duration = Math.max(...clips.map((clip) => clip.duration));
   root.userData.modelSpaceAnimation = {
@@ -163,7 +168,8 @@ function startAnimationSet(root: THREE.Object3D, sourceClips: THREE.AnimationCli
     clips: clips.map((clip) => clip.name),
     clipCount: sourceClips.length,
     playingClipCount: clips.length,
-    duration
+    duration,
+    sourceId
   };
 
   console.info(
@@ -175,10 +181,10 @@ function startAnimationSet(root: THREE.Object3D, sourceClips: THREE.AnimationCli
 
 function installGLTFAnimationPlayback() {
   const loaderPrototype = GLTFLoader.prototype as GLTFLoader & {
-    __modelSpaceAnimationSetPatch?: boolean;
+    __modelSpaceAnimationMultiLoadPatch?: boolean;
   };
-  if (loaderPrototype.__modelSpaceAnimationSetPatch) return;
-  loaderPrototype.__modelSpaceAnimationSetPatch = true;
+  if (loaderPrototype.__modelSpaceAnimationMultiLoadPatch) return;
+  loaderPrototype.__modelSpaceAnimationMultiLoadPatch = true;
 
   const originalLoad = GLTFLoader.prototype.load;
   type LoadArguments = Parameters<GLTFLoader["load"]>;
@@ -191,41 +197,46 @@ function installGLTFAnimationPlayback() {
     onError?: LoadArguments[3]
   ) {
     const wrappedOnLoad: LoadCallback = (gltf) => {
+      // Never stop another load here. React development/streaming navigation can
+      // leave an older GLTF request in flight; if it resolves late it must not
+      // freeze the scene that is currently rendered.
       startAnimationSet(gltf.scene, gltf.animations);
       onLoad(gltf);
     };
 
     return originalLoad.call(this, url, wrappedOnLoad, onProgress, onError);
   };
+}
 
+/**
+ * Update mixers immediately before the real Three.js render. This is more
+ * reliable than wrapping setAnimationLoop because the same render path is used
+ * by normal Object mode and WebXR, and it remains valid if WebXR replaces its
+ * internal animation callback while a session starts.
+ */
+function installAnimationRenderUpdate() {
   const rendererPrototype = THREE.WebGLRenderer.prototype as THREE.WebGLRenderer & {
-    __modelSpaceAnimationSetLoopPatch?: boolean;
+    __modelSpaceAnimationRenderPatch?: boolean;
   };
-  if (rendererPrototype.__modelSpaceAnimationSetLoopPatch) return;
-  rendererPrototype.__modelSpaceAnimationSetLoopPatch = true;
+  if (rendererPrototype.__modelSpaceAnimationRenderPatch) return;
+  rendererPrototype.__modelSpaceAnimationRenderPatch = true;
 
-  const originalSetAnimationLoop = THREE.WebGLRenderer.prototype.setAnimationLoop;
+  const originalRender = THREE.WebGLRenderer.prototype.render;
   const rendererTimes = new WeakMap<THREE.WebGLRenderer, number>();
-  type AnimationLoop = Parameters<THREE.WebGLRenderer["setAnimationLoop"]>[0];
 
-  THREE.WebGLRenderer.prototype.setAnimationLoop = function (callback: AnimationLoop) {
-    if (!callback) {
-      rendererTimes.delete(this);
-      return originalSetAnimationLoop.call(this, null);
+  THREE.WebGLRenderer.prototype.render = function (scene: THREE.Object3D, camera: THREE.Camera) {
+    const now = performance.now();
+    const previous = rendererTimes.get(this) ?? now;
+    const delta = THREE.MathUtils.clamp((now - previous) / 1000, 0, 0.1);
+    rendererTimes.set(this, now);
+
+    if (delta > 0) {
+      for (const state of animationStates) {
+        state.mixer.update(delta);
+      }
     }
 
-    rendererTimes.set(this, performance.now());
-    const wrapped: NonNullable<AnimationLoop> = (time, frame) => {
-      const previous = rendererTimes.get(this) ?? time;
-      const delta = THREE.MathUtils.clamp((time - previous) / 1000, 0, 0.1);
-      rendererTimes.set(this, time);
-
-      const state = activeAnimationState;
-      if (state) state.mixer.update(delta);
-      callback(time, frame);
-    };
-
-    return originalSetAnimationLoop.call(this, wrapped);
+    return originalRender.call(this, scene, camera);
   };
 }
 
@@ -323,12 +334,24 @@ function bakeTexture(texture: THREE.Texture, ownedTextures: Set<THREE.Texture>) 
   return baked;
 }
 
+function findSceneAnimationClips(scene: THREE.Object3D) {
+  let clips: THREE.AnimationClip[] | null = null;
+  scene.traverse((object) => {
+    if (clips) return;
+    const sourceId = object.userData[ANIMATION_SOURCE_KEY];
+    if (typeof sourceId !== "string") return;
+    const candidate = animationClipsBySourceId.get(sourceId);
+    if (candidate && candidate.length > 0) clips = candidate;
+  });
+  return clips ?? [];
+}
+
 function installUSDZTextureAndAnimationCompatibility() {
   const prototype = USDZExporter.prototype as USDZExporter & {
-    __modelSpaceTextureAnimationSetPatch?: boolean;
+    __modelSpaceTextureAnimationSourcePatch?: boolean;
   };
-  if (prototype.__modelSpaceTextureAnimationSetPatch) return;
-  prototype.__modelSpaceTextureAnimationSetPatch = true;
+  if (prototype.__modelSpaceTextureAnimationSourcePatch) return;
+  prototype.__modelSpaceTextureAnimationSourcePatch = true;
 
   const originalParseAsync = USDZExporter.prototype.parseAsync;
 
@@ -369,17 +392,24 @@ function installUSDZTextureAndAnimationCompatibility() {
       });
     });
 
-    const exportOptions = activeAnimationClips.length > 0
+    // Prefer animations explicitly supplied by the caller. Otherwise recover
+    // the clips that belong to this exact cloned GLB scene via its source ID.
+    // This prevents an older overlapping load from donating the wrong clips.
+    const explicitAnimations = options?.animations ?? [];
+    const sceneAnimations = explicitAnimations.length > 0
+      ? explicitAnimations
+      : findSceneAnimationClips(scene);
+    const exportOptions = sceneAnimations.length > 0
       ? {
           ...options,
-          animations: activeAnimationClips,
+          animations: sceneAnimations,
           animationFrameRate: 60
         }
       : options;
 
-    if (activeAnimationClips.length > 0) {
+    if (sceneAnimations.length > 0) {
       console.info(
-        `[ModelSpace] Exporting ${activeAnimationClips.length} animation clip(s) to Quick Look USDZ.`
+        `[ModelSpace] Exporting ${sceneAnimations.length} scene-owned animation clip(s) to Quick Look USDZ.`
       );
     }
 
@@ -395,4 +425,5 @@ function installUSDZTextureAndAnimationCompatibility() {
 }
 
 installGLTFAnimationPlayback();
+installAnimationRenderUpdate();
 installUSDZTextureAndAnimationCompatibility();
