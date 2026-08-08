@@ -25,6 +25,16 @@ function formatDate(value: string) {
   return `${hours}:${minutes} ${day}/${month}/${year}`;
 }
 
+function canonicalAudioMimeType(file: File) {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  if (extension === "mp3") return "audio/mpeg";
+  if (extension === "m4a") return "audio/mp4";
+  if (extension === "wav") return "audio/wav";
+  if (extension === "ogg") return "audio/ogg";
+  if (extension === "aac") return "audio/aac";
+  return file.type.startsWith("audio/") ? file.type : "audio/mpeg";
+}
+
 export function StudioDashboard({ initialModels }: { initialModels: PublicModel[] }) {
   const [models, setModels] = useState<PublicModel[]>(initialModels);
   const [file, setFile] = useState<File | null>(null);
@@ -107,6 +117,7 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
   async function uploadOptionalAudio(modelId: string, authHeaders: { "x-upload-token": string } | undefined) {
     if (!audioFile) return true;
 
+    const audioMimeType = canonicalAudioMimeType(audioFile);
     const signedResponse = await fetch("/api/models/audio-upload-url", {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders },
@@ -114,7 +125,7 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
         id: modelId,
         fileName: audioFile.name,
         fileSize: audioFile.size,
-        mimeType: audioFile.type || "audio/mpeg"
+        mimeType: audioMimeType
       })
     });
     const signedResult = await signedResponse.json().catch(() => ({}));
@@ -127,14 +138,16 @@ export function StudioDashboard({ initialModels }: { initialModels: PublicModel[
     const uploadResponse = await fetch(audioUpload.uploadUrl, {
       method: "PUT",
       headers: {
-        "Content-Type": audioFile.type || "audio/mpeg",
+        "Content-Type": audioMimeType,
         "x-upsert": "false"
       },
       body: audioFile
     });
 
     if (!uploadResponse.ok) {
-      setMessage({ type: "error", text: "Model đã tạo nhưng Supabase không nhận được file âm thanh." });
+      const detail = await uploadResponse.text().catch(() => "");
+      console.error("Supabase audio upload failed", uploadResponse.status, detail);
+      setMessage({ type: "error", text: "Model đã tạo nhưng Supabase không nhận được file âm thanh. Hãy kiểm tra allowed MIME types của bucket." });
       return false;
     }
     return true;
