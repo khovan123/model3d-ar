@@ -1,6 +1,28 @@
+:global(#modelspace-ar-overlay-root:xr-overlay) {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: transparent !important;
+  pointer-events: none;
+}
+
+:global(#modelspace-ar-overlay-root:xr-overlay) .infoTrigger,
+:global(#modelspace-ar-overlay-root:xr-overlay) .infoBackdrop,
+:global(#modelspace-ar-overlay-root:xr-overlay) .modelInfoCard {
+  pointer-events: auto;
+}
+
+:global(#modelspace-ar-overlay-root:xr-overlay) .infoTrigger {
+  display: grid !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
 .infoTrigger {
   position: fixed;
-  z-index: 14;
+  z-index: 2147483000;
   top: max(12px, env(safe-area-inset-top));
   right: 64px;
   width: 42px;
@@ -10,12 +32,14 @@
   display: grid;
   place-items: center;
   padding: 0;
-  background: rgba(17, 17, 17, 0.68);
+  background: rgba(17, 17, 17, 0.78);
   color: #fff;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.12) inset, 0 8px 24px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.14) inset, 0 8px 24px rgba(0, 0, 0, 0.24);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   cursor: pointer;
+  pointer-events: auto;
+  touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -32,7 +56,7 @@
 
 .infoBackdrop {
   position: fixed;
-  z-index: 30;
+  z-index: 2147483001;
   inset: 0;
   width: 100%;
   height: 100%;
@@ -42,11 +66,12 @@
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   cursor: default;
+  pointer-events: auto;
 }
 
 .modelInfoCard {
   position: fixed;
-  z-index: 31;
+  z-index: 2147483002;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
@@ -61,6 +86,7 @@
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
+  pointer-events: auto;
   animation: modalIn 150ms ease-out;
 }
 
